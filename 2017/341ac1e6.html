@@ -42,11 +42,9 @@
   copyright: undefined,
   lightbox: 'fancybox',
   Snackbar: undefined,
-  source: {
-    justifiedGallery: {
-      js: 'https://cdn.jsdelivr.net/npm/flickr-justified-gallery/dist/fjGallery.min.js',
-      css: 'https://cdn.jsdelivr.net/npm/flickr-justified-gallery/dist/fjGallery.min.css'
-    }
+  infinitegrid: {
+    js: 'https://cdn.jsdelivr.net/npm/@egjs/infinitegrid/dist/infinitegrid.min.js',
+    buttonText: '加载更多'
   },
   isPhotoFigcaption: false,
   islazyload: false,
@@ -63,84 +61,77 @@
   isHighlightShrink: false,
   isToc: false,
   postUpdate: '2023-04-13 02:51:36'
-}</script><noscript><style type="text/css">
-  #nav {
-    opacity: 1
-  }
-  .justified-gallery img {
-    opacity: 1
-  }
-
-  #recent-posts time,
-  #post-meta time {
-    display: inline !important
-  }
-</style></noscript><script>(win=>{
-    win.saveToLocal = {
-      set: function setWithExpiry(key, value, ttl) {
-        if (ttl === 0) return
-        const now = new Date()
-        const expiryDay = ttl * 86400000
-        const item = {
-          value: value,
-          expiry: now.getTime() + expiryDay,
+}</script><script>(win=>{
+      win.saveToLocal = {
+        set: (key, value, ttl) => {
+          if (ttl === 0) return
+          const now = Date.now()
+          const expiry = now + ttl * 86400000
+          const item = {
+            value,
+            expiry
+          }
+          localStorage.setItem(key, JSON.stringify(item))
+        },
+      
+        get: key => {
+          const itemStr = localStorage.getItem(key)
+      
+          if (!itemStr) {
+            return undefined
+          }
+          const item = JSON.parse(itemStr)
+          const now = Date.now()
+      
+          if (now > item.expiry) {
+            localStorage.removeItem(key)
+            return undefined
+          }
+          return item.value
         }
-        localStorage.setItem(key, JSON.stringify(item))
-      },
-
-      get: function getWithExpiry(key) {
-        const itemStr = localStorage.getItem(key)
-
-        if (!itemStr) {
-          return undefined
+      }
+    
+      win.getScript = (url, attr = {}) => new Promise((resolve, reject) => {
+        const script = document.createElement('script')
+        script.src = url
+        script.async = true
+        script.onerror = reject
+        script.onload = script.onreadystatechange = function() {
+          const loadState = this.readyState
+          if (loadState && loadState !== 'loaded' && loadState !== 'complete') return
+          script.onload = script.onreadystatechange = null
+          resolve()
         }
-        const item = JSON.parse(itemStr)
-        const now = new Date()
 
-        if (now.getTime() > item.expiry) {
-          localStorage.removeItem(key)
-          return undefined
+        Object.keys(attr).forEach(key => {
+          script.setAttribute(key, attr[key])
+        })
+
+        document.head.appendChild(script)
+      })
+    
+      win.getCSS = (url, id = false) => new Promise((resolve, reject) => {
+        const link = document.createElement('link')
+        link.rel = 'stylesheet'
+        link.href = url
+        if (id) link.id = id
+        link.onerror = reject
+        link.onload = link.onreadystatechange = function() {
+          const loadState = this.readyState
+          if (loadState && loadState !== 'loaded' && loadState !== 'complete') return
+          link.onload = link.onreadystatechange = null
+          resolve()
         }
-        return item.value
-      }
-    }
-  
-    win.getScript = url => new Promise((resolve, reject) => {
-      const script = document.createElement('script')
-      script.src = url
-      script.async = true
-      script.onerror = reject
-      script.onload = script.onreadystatechange = function() {
-        const loadState = this.readyState
-        if (loadState && loadState !== 'loaded' && loadState !== 'complete') return
-        script.onload = script.onreadystatechange = null
-        resolve()
-      }
-      document.head.appendChild(script)
-    })
-  
-    win.getCSS = (url,id = false) => new Promise((resolve, reject) => {
-      const link = document.createElement('link')
-      link.rel = 'stylesheet'
-      link.href = url
-      if (id) link.id = id
-      link.onerror = reject
-      link.onload = link.onreadystatechange = function() {
-        const loadState = this.readyState
-        if (loadState && loadState !== 'loaded' && loadState !== 'complete') return
-        link.onload = link.onreadystatechange = null
-        resolve()
-      }
-      document.head.appendChild(link)
-    })
-  
-      win.activateDarkMode = function () {
+        document.head.appendChild(link)
+      })
+    
+      win.activateDarkMode = () => {
         document.documentElement.setAttribute('data-theme', 'dark')
         if (document.querySelector('meta[name="theme-color"]') !== null) {
           document.querySelector('meta[name="theme-color"]').setAttribute('content', '#0d0d0d')
         }
       }
-      win.activateLightMode = function () {
+      win.activateLightMode = () => {
         document.documentElement.setAttribute('data-theme', 'light')
         if (document.querySelector('meta[name="theme-color"]') !== null) {
           document.querySelector('meta[name="theme-color"]').setAttribute('content', '#ffffff')
@@ -148,9 +139,9 @@
       }
       const t = saveToLocal.get('theme')
     
-          if (t === 'dark') activateDarkMode()
-          else if (t === 'light') activateLightMode()
-        
+        if (t === 'dark') activateDarkMode()
+        else if (t === 'light') activateLightMode()
+      
       const asideStatus = saveToLocal.get('aside-status')
       if (asideStatus !== undefined) {
         if (asideStatus === 'hide') {
@@ -160,26 +151,31 @@
         }
       }
     
-    const detectApple = () => {
-      if(/iPad|iPhone|iPod|Macintosh/.test(navigator.userAgent)){
-        document.documentElement.classList.add('apple')
+      const detectApple = () => {
+        if(/iPad|iPhone|iPod|Macintosh/.test(navigator.userAgent)){
+          document.documentElement.classList.add('apple')
+        }
       }
-    }
-    detectApple()
+      detectApple()
     })(window)</script><meta name="generator" content="Hexo 6.3.0"><link rel="alternate" href="/atom.xml" title="提剑追梦" type="application/atom+xml">
 </head><body><div id="sidebar"><div id="menu-mask"></div><div id="sidebar-menus"><div class="avatar-img is-center"><img src="https://q1.qlogo.cn/g?b=qq&amp;nk=80116747&amp;s=100" onerror="onerror=null;src='/img/friend_404.gif'" alt="avatar"/></div><div class="sidebar-site-data site-data is-center"><a href="/archives/"><div class="headline">文章</div><div class="length-num">118</div></a><a href="/tags/"><div class="headline">标签</div><div class="length-num">205</div></a><a href="/categories/"><div class="headline">分类</div><div class="length-num">16</div></a></div><hr class="custom-hr"/><div class="menus_items"><div class="menus_item"><a class="site-page" href="/"><i class="fa-fw fas fa-home"></i><span> 主页</span></a></div><div class="menus_item"><a class="site-page" href="/talks/"><i class="fa-fw fas fa-comment"></i><span> 说说</span></a></div><div class="menus_item"><a class="site-page" href="/photos/"><i class="fa-fw fas fa-camera"></i><span> 相册</span></a></div><div class="menus_item"><a class="site-page group" href="javascript:void(0);"><i class="fa-fw fas fa-link"></i><span> 链接</span><i class="fas fa-chevron-down"></i></a><ul class="menus_item_child"><li><a class="site-page child" href="/fcircle/"><i class="fa-fw far fa-circle"></i><span> 朋友</span></a></li><li><a class="site-page child" href="/gbook/"><i class="fa-fw fas fa-link"></i><span> 留言</span></a></li><li><a class="site-page child" href="/link/"><i class="fa-fw fas fa-link"></i><span> 友链</span></a></li></ul></div><div class="menus_item"><a class="site-page" href="/about/"><i class="fa-fw fas fa-heart"></i><span> 关于</span></a></div><div class="menus_item"><a class="site-page group" href="javascript:void(0);"><i class="fa-fw fas fa-book"></i><span> 文章</span><i class="fas fa-chevron-down"></i></a><ul class="menus_item_child"><li><a class="site-page child" href="/archives/"><i class="fa-fw fas fa-archive"></i><span> 归档</span></a></li><li><a class="site-page child" href="/tags/"><i class="fa-fw fas fa-tags"></i><span> 标签</span></a></li><li><a class="site-page child" href="/categories/"><i class="fa-fw fas fa-folder-open"></i><span> 分类</span></a></li></ul></div><div class="menus_item"><a class="site-page group" href="javascript:void(0);"><i class="fa-fw fas fa-list"></i><span> 列表</span><i class="fas fa-chevron-down"></i></a><ul class="menus_item_child"><li><a class="site-page child" href="/movies/"><i class="fa-fw fas fa-video"></i><span> 电影</span></a></li><li><a class="site-page child" href="/songs/"><i class="fa-fw fal fas fa-music"></i><span> 歌单</span></a></li><li><a class="site-page child" href="/books/"><i class="fa-fw fas fa-book"></i><span> 书单</span></a></li><li><a class="site-page child" href="/games/"><i class="fa-fw fas fa-gamepad"></i><span> 游戏</span></a></li></ul></div></div></div></div><div class="post" id="body-wrap"><header class="not-top-img fixed" id="page-header"><nav id="nav"><span id="blog-info"><a href="/" title="提剑追梦"><img class="site-icon" src="https://s2.loli.net/2023/04/08/P723CaQcKIpJ96W.png"/><span class="site-name">提剑追梦</span></a></span><div id="menus"><div class="menus_items"><div class="menus_item"><a class="site-page" href="/"><i class="fa-fw fas fa-home"></i><span> 主页</span></a></div><div class="menus_item"><a class="site-page" href="/talks/"><i class="fa-fw fas fa-comment"></i><span> 说说</span></a></div><div class="menus_item"><a class="site-page" href="/photos/"><i class="fa-fw fas fa-camera"></i><span> 相册</span></a></div><div class="menus_item"><a class="site-page group" href="javascript:void(0);"><i class="fa-fw fas fa-link"></i><span> 链接</span><i class="fas fa-chevron-down"></i></a><ul class="menus_item_child"><li><a class="site-page child" href="/fcircle/"><i class="fa-fw far fa-circle"></i><span> 朋友</span></a></li><li><a class="site-page child" href="/gbook/"><i class="fa-fw fas fa-link"></i><span> 留言</span></a></li><li><a class="site-page child" href="/link/"><i class="fa-fw fas fa-link"></i><span> 友链</span></a></li></ul></div><div class="menus_item"><a class="site-page" href="/about/"><i class="fa-fw fas fa-heart"></i><span> 关于</span></a></div><div class="menus_item"><a class="site-page group" href="javascript:void(0);"><i class="fa-fw fas fa-book"></i><span> 文章</span><i class="fas fa-chevron-down"></i></a><ul class="menus_item_child"><li><a class="site-page child" href="/archives/"><i class="fa-fw fas fa-archive"></i><span> 归档</span></a></li><li><a class="site-page child" href="/tags/"><i class="fa-fw fas fa-tags"></i><span> 标签</span></a></li><li><a class="site-page child" href="/categories/"><i class="fa-fw fas fa-folder-open"></i><span> 分类</span></a></li></ul></div><div class="menus_item"><a class="site-page group" href="javascript:void(0);"><i class="fa-fw fas fa-list"></i><span> 列表</span><i class="fas fa-chevron-down"></i></a><ul class="menus_item_child"><li><a class="site-page child" href="/movies/"><i class="fa-fw fas fa-video"></i><span> 电影</span></a></li><li><a class="site-page child" href="/songs/"><i class="fa-fw fal fas fa-music"></i><span> 歌单</span></a></li><li><a class="site-page child" href="/books/"><i class="fa-fw fas fa-book"></i><span> 书单</span></a></li><li><a class="site-page child" href="/games/"><i class="fa-fw fas fa-gamepad"></i><span> 游戏</span></a></li></ul></div></div><div id="toggle-menu"><a class="site-page" href="javascript:void(0);"><i class="fas fa-bars fa-fw"></i></a></div></div></nav></header><main class="layout" id="content-inner"><div id="post"><div id="post-info"><h1 class="post-title">珠海 阴雨天 华发商都<a class="post-edit-link" href="https://github.com/jkjoy/loliko/edit/main/source/_posts/2017-06-26-zhuhai.md" title="编辑" target="_blank"><i class="fas fa-pencil-alt"></i></a></h1><div id="post-meta"><div class="meta-firstline"><span class="post-meta-date"><i class="far fa-calendar-alt fa-fw post-meta-icon"></i><span class="post-meta-label">发表于</span><time class="post-meta-date-created" datetime="2017-06-26T11:18:00.000Z" title="发表于 2017-06-26 11:18:00">2017-06-26</time><span class="post-meta-separator">|</span><i class="fas fa-history fa-fw post-meta-icon"></i><span class="post-meta-label">更新于</span><time class="post-meta-date-updated" datetime="2023-04-13T02:51:36.000Z" title="更新于 2023-04-13 02:51:36">2023-04-13</time></span><span class="post-meta-categories"><span class="post-meta-separator">|</span><i class="fas fa-inbox fa-fw post-meta-icon"></i><a class="post-meta-categories" href="/categories/%E7%85%A7%E7%89%87/">照片</a></span></div><div class="meta-secondline"><span class="post-meta-separator">|</span><span class="post-meta-wordcount"><i class="far fa-file-word fa-fw post-meta-icon"></i><span class="post-meta-label">字数总计:</span><span class="word-count">20</span><span class="post-meta-separator">|</span><i class="far fa-clock fa-fw post-meta-icon"></i><span class="post-meta-label">阅读时长:</span><span>1分钟</span></span><span class="post-meta-separator">|</span><span class="post-meta-pv-cv" id="" data-flag-title="珠海 阴雨天 华发商都"><i class="far fa-eye fa-fw post-meta-icon"></i><span class="post-meta-label">阅读量:</span><span id="busuanzi_value_page_pv"><i class="fa-solid fa-spinner fa-spin"></i></span></span></div></div></div><article class="post-content" id="article-container"><p>图片无压缩</p>
 <p><img src="https://xy07-1251893119.costj.myqcloud.com/2017/06/26/3871952792.jpg" alt="珠海，华发商都"><br><img src="https://xy07-1251893119.costj.myqcloud.com/2017/06/26/2565782733.jpg" alt="珠海，阴雨天"><br><img src="https://xy07-1251893119.costj.myqcloud.com/2017/06/26/3871952792.jpg" alt="IMG_20170620_190831.jpg"></p>
 <p>生产工具：小米5<br>拍摄地点：华发商都</p>
-</article><div class="post-copyright"><div class="post-copyright__author"><span class="post-copyright-meta">文章作者: </span><span class="post-copyright-info"><a href="https://jkjoy.cn">浪子</a></span></div><div class="post-copyright__type"><span class="post-copyright-meta">文章链接: </span><span class="post-copyright-info"><a href="https://jkjoy.cn/2017/341ac1e6.html">https://jkjoy.cn/2017/341ac1e6.html</a></span></div><div class="post-copyright__notice"><span class="post-copyright-meta">版权声明: </span><span class="post-copyright-info">本博客所有文章除特别声明外，均采用 <a href="https://creativecommons.org/licenses/by-nc-sa/4.0/" target="_blank">CC BY-NC-SA 4.0</a> 许可协议。转载请注明来自 <a href="https://jkjoy.cn" target="_blank">提剑追梦</a>！</span></div></div><div class="tag_share"><div class="post-meta__tag-list"><a class="post-meta__tags" href="/tags/%E7%8F%A0%E6%B5%B7/">珠海</a><a class="post-meta__tags" href="/tags/%E9%98%B4%E9%9B%A8%E5%A4%A9/">阴雨天</a></div><div class="post_share"><div class="social-share" data-image="https://xy07-1251893119.costj.myqcloud.com/2017/06/26/3871952792.jpg" data-sites="wechat,weibo,qq"></div><link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/butterfly-extsrc/sharejs/dist/css/share.min.css" media="print" onload="this.media='all'"><script src="https://cdn.jsdelivr.net/npm/butterfly-extsrc/sharejs/dist/js/social-share.min.js" defer></script></div></div><div class="post-reward"><div class="reward-button"><i class="fas fa-qrcode"></i> 打赏</div><div class="reward-main"><ul class="reward-all"><li class="reward-item"><a href="https://s2.loli.net/2023/04/01/TmOidERwqLMfBCj.png" target="_blank"><img class="post-qr-code-img" src="https://s2.loli.net/2023/04/01/TmOidERwqLMfBCj.png" alt="微信"/></a><div class="post-qr-code-desc">微信</div></li><li class="reward-item"><a href="https://s2.loli.net/2023/04/01/BsfZ3I9zmqM5uwb.png" target="_blank"><img class="post-qr-code-img" src="https://s2.loli.net/2023/04/01/BsfZ3I9zmqM5uwb.png" alt="支付宝"/></a><div class="post-qr-code-desc">支付宝</div></li></ul></div></div><nav class="pagination-post" id="pagination"><div class="prev-post pull-left"><a href="/2017/44022.html" title="写在30岁之后"><img class="cover" src="https://blogcdn.loliko.cn/cover/cover1.png" onerror="onerror=null;src='/img/404.jpg'" alt="cover of previous post"><div class="pagination-info"><div class="label">上一篇</div><div class="prev_info">写在30岁之后</div></div></a></div><div class="next-post pull-right"><a href="/2017/eedcfe1c.html" title="求婚大作战"><img class="cover" src="https://xy07-1251893119.costj.myqcloud.com/2017/06/05/2391225472.jpg" onerror="onerror=null;src='/img/404.jpg'" alt="cover of next post"><div class="pagination-info"><div class="label">下一篇</div><div class="next_info">求婚大作战</div></div></a></div></nav><div class="relatedPosts"><div class="headline"><i class="fas fa-thumbs-up fa-fw"></i><span>相关推荐</span></div><div class="relatedPosts-list"><div><a href="/2017/b93101ab.html" title="珠海的早晨"><img class="cover" src="https://xy07-1251893119.costj.myqcloud.com/2017/12/02/1164475938.jpg" alt="cover"><div class="content is-center"><div class="date"><i class="far fa-calendar-alt fa-fw"></i> 2017-12-02</div><div class="title">珠海的早晨</div></div></a></div><div><a href="/2018/28203.html" title="下雨了"><img class="cover" src="https://blogcdn.loliko.cn/cover/cover1.png" alt="cover"><div class="content is-center"><div class="date"><i class="far fa-calendar-alt fa-fw"></i> 2018-01-06</div><div class="title">下雨了</div></div></a></div></div></div><hr class="custom-hr"/><div id="post-comment"><div class="comment-head"><div class="comment-headline"><i class="fas fa-comments fa-fw"></i><span> 评论</span></div></div><div class="comment-wrap"><div><div id="twikoo-wrap"></div></div></div></div></div><div class="aside-content" id="aside-content"><div class="card-widget card-info"><div class="is-center"><div class="avatar-img"><img src="https://q1.qlogo.cn/g?b=qq&amp;nk=80116747&amp;s=100" onerror="this.onerror=null;this.src='/img/friend_404.gif'" alt="avatar"/></div><div class="author-info__name">浪子</div><div class="author-info__description">曾梦想仗剑走天涯;因太胖放弃原计划.</div></div><div class="card-info-data site-data is-center"><a href="/archives/"><div class="headline">文章</div><div class="length-num">118</div></a><a href="/tags/"><div class="headline">标签</div><div class="length-num">205</div></a><a href="/categories/"><div class="headline">分类</div><div class="length-num">16</div></a></div><div class="card-info-social-icons is-center"><a class="social-icon" href="https://github.com/jkftyb" target="_blank" title="Github"><i class="fab fa-github"></i></a><a class="social-icon" href="mailto:imsunpw@gmail.com" target="_blank" title="Email"><i class="fas fa-envelope"></i></a><a class="social-icon" href="tencent://message/?uin=122790336&amp;Site=&amp;Menu=yes" target="_blank" title="QQ"><i class="fab fa-qq"></i></a><a class="social-icon" href="https://jiong.us/@jkjoy" target="_blank" title="Mastodon"><i class="fab fa-mastodon"></i></a></div></div><div class="card-widget card-announcement"><div class="item-headline"><i class="fas fa-bullhorn fa-shake"></i><span>公告</span></div><div class="announcement_content">自由:畅所欲言<br>分享:共享精神<br>如果喜欢就点个赞吧!谢谢诸位</div></div><div class="sticky_layout"><div class="card-widget card-recent-post"><div class="item-headline"><i class="fas fa-history"></i><span>最新文章</span></div><div class="aside-list"><div class="aside-list-item"><a class="thumbnail" href="/2023/8084c141.html" title="如何在Fly.io部署typecho"><img src="https://blogcdn.loliko.cn/cover/cover2.png" onerror="this.onerror=null;this.src='/img/404.jpg'" alt="如何在Fly.io部署typecho"/></a><div class="content"><a class="title" href="/2023/8084c141.html" title="如何在Fly.io部署typecho">如何在Fly.io部署typecho</a><time datetime="2023-09-06T00:00:00.000Z" title="发表于 2023-09-06 00:00:00">2023-09-06</time></div></div><div class="aside-list-item"><a class="thumbnail" href="/2023/9597b72.html" title="在fly.io部署Gotosocial"><img src="https://blogcdn.loliko.cn/cover/cover2.png" onerror="this.onerror=null;this.src='/img/404.jpg'" alt="在fly.io部署Gotosocial"/></a><div class="content"><a class="title" href="/2023/9597b72.html" title="在fly.io部署Gotosocial">在fly.io部署Gotosocial</a><time datetime="2023-08-17T18:55:46.000Z" title="发表于 2023-08-17 18:55:46">2023-08-17</time></div></div><div class="aside-list-item"><a class="thumbnail" href="/2023/c80a64e9.html" title="在fly.io部署artalk评论系统"><img src="https://blogcdn.loliko.cn/cover/cover1.png" onerror="this.onerror=null;this.src='/img/404.jpg'" alt="在fly.io部署artalk评论系统"/></a><div class="content"><a class="title" href="/2023/c80a64e9.html" title="在fly.io部署artalk评论系统">在fly.io部署artalk评论系统</a><time datetime="2023-08-15T09:37:00.000Z" title="发表于 2023-08-15 09:37:00">2023-08-15</time></div></div><div class="aside-list-item"><a class="thumbnail" href="/2023/88a97a51.html" title="如何在Fly.io部署Memos"><img src="https://blogcdn.loliko.cn/cover/cover1.png" onerror="this.onerror=null;this.src='/img/404.jpg'" alt="如何在Fly.io部署Memos"/></a><div class="content"><a class="title" href="/2023/88a97a51.html" title="如何在Fly.io部署Memos">如何在Fly.io部署Memos</a><time datetime="2023-08-15T00:00:00.000Z" title="发表于 2023-08-15 00:00:00">2023-08-15</time></div></div><div class="aside-list-item"><a class="thumbnail" href="/2023/e48ebe86.html" title="使用 Docker 构建 Pleroma 实例"><img src="https://blogcdn.loliko.cn/cover/cover1.png" onerror="this.onerror=null;this.src='/img/404.jpg'" alt="使用 Docker 构建 Pleroma 实例"/></a><div class="content"><a class="title" href="/2023/e48ebe86.html" title="使用 Docker 构建 Pleroma 实例">使用 Docker 构建 Pleroma 实例</a><time datetime="2023-07-24T21:57:00.000Z" title="发表于 2023-07-24 21:57:00">2023-07-24</time></div></div></div></div></div></div></main><footer id="footer"><div id="footer-wrap"><div class="copyright">&copy;2011 - 2023 By 浪子</div><div class="framework-info"><span>框架 </span><a target="_blank" rel="noopener" href="https://hexo.io">Hexo</a><span class="footer-separator">|</span><span>主题 </span><a target="_blank" rel="noopener" href="https://github.com/jerryc127/hexo-theme-butterfly">Butterfly</a></div><div class="footer_custom_text">本站内容如有侵犯到你的权益,请联系我删除</div></div></footer></div><div id="rightside"><div id="rightside-config-hide"><button id="readmode" type="button" title="阅读模式"><i class="fas fa-book-open"></i></button><button id="translateLink" type="button" title="简繁转换">繁</button><button id="darkmode" type="button" title="浅色和深色模式转换"><i class="fas fa-adjust"></i></button><button id="hide-aside-btn" type="button" title="单栏和双栏切换"><i class="fas fa-arrows-alt-h"></i></button></div><div id="rightside-config-show"><button id="rightside_config" type="button" title="设置"><i class="fas fa-cog fa-spin"></i></button><a id="to_comment" href="#post-comment" title="直达评论"><i class="fas fa-comments"></i></a><button id="go-up" type="button" title="回到顶部"><span class="scroll-percent"></span><i class="fas fa-arrow-up"></i></button></div></div><div><script src="/js/utils.js"></script><script src="/js/main.js"></script><script src="/js/tw_cn.js"></script><script src="https://cdn.jsdelivr.net/npm/@fancyapps/ui/dist/fancybox/fancybox.umd.min.js"></script><div class="js-pjax"><script>(()=>{
+</article><div class="post-copyright"><div class="post-copyright__author"><span class="post-copyright-meta"><i class="fas fa-circle-user fa-fw"></i>文章作者: </span><span class="post-copyright-info"><a href="https://jkjoy.cn">浪子</a></span></div><div class="post-copyright__type"><span class="post-copyright-meta"><i class="fas fa-square-arrow-up-right fa-fw"></i>文章链接: </span><span class="post-copyright-info"><a href="https://jkjoy.cn/2017/341ac1e6.html">https://jkjoy.cn/2017/341ac1e6.html</a></span></div><div class="post-copyright__notice"><span class="post-copyright-meta"><i class="fas fa-circle-exclamation fa-fw"></i>版权声明: </span><span class="post-copyright-info">本博客所有文章除特别声明外，均采用 <a href="https://creativecommons.org/licenses/by-nc-sa/4.0/" target="_blank">CC BY-NC-SA 4.0</a> 许可协议。转载请注明来自 <a href="https://jkjoy.cn" target="_blank">提剑追梦</a>！</span></div></div><div class="tag_share"><div class="post-meta__tag-list"><a class="post-meta__tags" href="/tags/%E7%8F%A0%E6%B5%B7/">珠海</a><a class="post-meta__tags" href="/tags/%E9%98%B4%E9%9B%A8%E5%A4%A9/">阴雨天</a></div><div class="post_share"><div class="social-share" data-image="https://xy07-1251893119.costj.myqcloud.com/2017/06/26/3871952792.jpg" data-sites="wechat,weibo,qq"></div><link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/butterfly-extsrc/sharejs/dist/css/share.min.css" media="print" onload="this.media='all'"><script src="https://cdn.jsdelivr.net/npm/butterfly-extsrc/sharejs/dist/js/social-share.min.js" defer></script></div></div><div class="post-reward"><div class="reward-button"><i class="fas fa-qrcode"></i>赞助</div><div class="reward-main"><ul class="reward-all"><li class="reward-item"><a href="https://s2.loli.net/2023/04/01/TmOidERwqLMfBCj.png" target="_blank"><img class="post-qr-code-img" src="https://s2.loli.net/2023/04/01/TmOidERwqLMfBCj.png" alt="微信"/></a><div class="post-qr-code-desc">微信</div></li><li class="reward-item"><a href="https://s2.loli.net/2023/04/01/BsfZ3I9zmqM5uwb.png" target="_blank"><img class="post-qr-code-img" src="https://s2.loli.net/2023/04/01/BsfZ3I9zmqM5uwb.png" alt="支付宝"/></a><div class="post-qr-code-desc">支付宝</div></li></ul></div></div><nav class="pagination-post" id="pagination"><div class="prev-post pull-left"><a href="/2017/44022.html" title="写在30岁之后"><img class="cover" src="https://blogcdn.loliko.cn/cover/cover1.png" onerror="onerror=null;src='/img/404.jpg'" alt="cover of previous post"><div class="pagination-info"><div class="label">上一篇</div><div class="prev_info">写在30岁之后</div></div></a></div><div class="next-post pull-right"><a href="/2017/eedcfe1c.html" title="求婚大作战"><img class="cover" src="https://xy07-1251893119.costj.myqcloud.com/2017/06/05/2391225472.jpg" onerror="onerror=null;src='/img/404.jpg'" alt="cover of next post"><div class="pagination-info"><div class="label">下一篇</div><div class="next_info">求婚大作战</div></div></a></div></nav><div class="relatedPosts"><div class="headline"><i class="fas fa-thumbs-up fa-fw"></i><span>相关推荐</span></div><div class="relatedPosts-list"><div><a href="/2017/b93101ab.html" title="珠海的早晨"><img class="cover" src="https://xy07-1251893119.costj.myqcloud.com/2017/12/02/1164475938.jpg" alt="cover"><div class="content is-center"><div class="date"><i class="far fa-calendar-alt fa-fw"></i> 2017-12-02</div><div class="title">珠海的早晨</div></div></a></div><div><a href="/2018/28203.html" title="下雨了"><img class="cover" src="https://blogcdn.loliko.cn/cover/cover1.png" alt="cover"><div class="content is-center"><div class="date"><i class="far fa-calendar-alt fa-fw"></i> 2018-01-06</div><div class="title">下雨了</div></div></a></div></div></div><hr class="custom-hr"/><div id="post-comment"><div class="comment-head"><div class="comment-headline"><i class="fas fa-comments fa-fw"></i><span> 评论</span></div></div><div class="comment-wrap"><div><div id="twikoo-wrap"></div></div></div></div></div><div class="aside-content" id="aside-content"><div class="card-widget card-info"><div class="is-center"><div class="avatar-img"><img src="https://q1.qlogo.cn/g?b=qq&amp;nk=80116747&amp;s=100" onerror="this.onerror=null;this.src='/img/friend_404.gif'" alt="avatar"/></div><div class="author-info__name">浪子</div><div class="author-info__description">曾梦想仗剑走天涯;因太胖放弃原计划.</div></div><div class="card-info-data site-data is-center"><a href="/archives/"><div class="headline">文章</div><div class="length-num">118</div></a><a href="/tags/"><div class="headline">标签</div><div class="length-num">205</div></a><a href="/categories/"><div class="headline">分类</div><div class="length-num">16</div></a></div><div class="card-info-social-icons is-center"><a class="social-icon" href="https://github.com/jkftyb" target="_blank" title="Github"><i class="fab fa-github"></i></a><a class="social-icon" href="mailto:imsunpw@gmail.com" target="_blank" title="Email"><i class="fas fa-envelope"></i></a><a class="social-icon" href="tencent://message/?uin=122790336&amp;Site=&amp;Menu=yes" target="_blank" title="QQ"><i class="fab fa-qq"></i></a><a class="social-icon" href="https://jiong.us/@jkjoy" target="_blank" title="Mastodon"><i class="fab fa-mastodon"></i></a></div></div><div class="card-widget card-announcement"><div class="item-headline"><i class="fas fa-bullhorn fa-shake"></i><span>公告</span></div><div class="announcement_content">自由:畅所欲言<br>分享:共享精神<br>如果喜欢就点个赞吧!谢谢诸位</div></div><div class="sticky_layout"><div class="card-widget card-recent-post"><div class="item-headline"><i class="fas fa-history"></i><span>最新文章</span></div><div class="aside-list"><div class="aside-list-item"><a class="thumbnail" href="/2023/8084c141.html" title="如何在Fly.io部署typecho"><img src="https://blogcdn.loliko.cn/cover/cover1.png" onerror="this.onerror=null;this.src='/img/404.jpg'" alt="如何在Fly.io部署typecho"/></a><div class="content"><a class="title" href="/2023/8084c141.html" title="如何在Fly.io部署typecho">如何在Fly.io部署typecho</a><time datetime="2023-09-06T00:00:00.000Z" title="发表于 2023-09-06 00:00:00">2023-09-06</time></div></div><div class="aside-list-item"><a class="thumbnail" href="/2023/9597b72.html" title="在fly.io部署Gotosocial"><img src="https://blogcdn.loliko.cn/cover/cover1.png" onerror="this.onerror=null;this.src='/img/404.jpg'" alt="在fly.io部署Gotosocial"/></a><div class="content"><a class="title" href="/2023/9597b72.html" title="在fly.io部署Gotosocial">在fly.io部署Gotosocial</a><time datetime="2023-08-17T18:55:46.000Z" title="发表于 2023-08-17 18:55:46">2023-08-17</time></div></div><div class="aside-list-item"><a class="thumbnail" href="/2023/c80a64e9.html" title="在fly.io部署artalk评论系统"><img src="https://blogcdn.loliko.cn/cover/cover2.png" onerror="this.onerror=null;this.src='/img/404.jpg'" alt="在fly.io部署artalk评论系统"/></a><div class="content"><a class="title" href="/2023/c80a64e9.html" title="在fly.io部署artalk评论系统">在fly.io部署artalk评论系统</a><time datetime="2023-08-15T09:37:00.000Z" title="发表于 2023-08-15 09:37:00">2023-08-15</time></div></div><div class="aside-list-item"><a class="thumbnail" href="/2023/88a97a51.html" title="如何在Fly.io部署Memos"><img src="https://blogcdn.loliko.cn/cover/cover2.png" onerror="this.onerror=null;this.src='/img/404.jpg'" alt="如何在Fly.io部署Memos"/></a><div class="content"><a class="title" href="/2023/88a97a51.html" title="如何在Fly.io部署Memos">如何在Fly.io部署Memos</a><time datetime="2023-08-15T00:00:00.000Z" title="发表于 2023-08-15 00:00:00">2023-08-15</time></div></div><div class="aside-list-item"><a class="thumbnail" href="/2023/e48ebe86.html" title="使用 Docker 构建 Pleroma 实例"><img src="https://blogcdn.loliko.cn/cover/cover2.png" onerror="this.onerror=null;this.src='/img/404.jpg'" alt="使用 Docker 构建 Pleroma 实例"/></a><div class="content"><a class="title" href="/2023/e48ebe86.html" title="使用 Docker 构建 Pleroma 实例">使用 Docker 构建 Pleroma 实例</a><time datetime="2023-07-24T21:57:00.000Z" title="发表于 2023-07-24 21:57:00">2023-07-24</time></div></div></div></div></div></div></main><footer id="footer"><div id="footer-wrap"><div class="copyright">&copy;2011 - 2023 By 浪子</div><div class="framework-info"><span>框架 </span><a target="_blank" rel="noopener" href="https://hexo.io">Hexo</a><span class="footer-separator">|</span><span>主题 </span><a target="_blank" rel="noopener" href="https://github.com/jerryc127/hexo-theme-butterfly">Butterfly</a></div><div class="footer_custom_text">本站内容如有侵犯到你的权益,请联系我删除</div></div></footer></div><div id="rightside"><div id="rightside-config-hide"><button id="readmode" type="button" title="阅读模式"><i class="fas fa-book-open"></i></button><button id="translateLink" type="button" title="简繁转换">繁</button><button id="darkmode" type="button" title="浅色和深色模式转换"><i class="fas fa-adjust"></i></button><button id="hide-aside-btn" type="button" title="单栏和双栏切换"><i class="fas fa-arrows-alt-h"></i></button></div><div id="rightside-config-show"><button id="rightside-config" type="button" title="设置"><i class="fas fa-cog fa-spin"></i></button><a id="to_comment" href="#post-comment" title="直达评论"><i class="fas fa-comments"></i></a><button id="go-up" type="button" title="回到顶部"><span class="scroll-percent"></span><i class="fas fa-arrow-up"></i></button></div></div><div><script src="/js/utils.js"></script><script src="/js/main.js"></script><script src="/js/tw_cn.js"></script><script src="https://cdn.jsdelivr.net/npm/@fancyapps/ui/dist/fancybox/fancybox.umd.min.js"></script><div class="js-pjax"><script>(() => {
   const init = () => {
     twikoo.init(Object.assign({
       el: '#twikoo-wrap',
       envId: 'https://twikoo.ima.cm',
       region: '',
-      onCommentLoaded: function () {
+      onCommentLoaded: () => {
         btf.loadLightbox(document.querySelectorAll('#twikoo .tk-content img:not(.tk-owo-emotion)'))
       }
     }, null))
+  }
+
+  const loadTwikoo = () => {
+    if (typeof twikoo === 'object') setTimeout(init,0)
+    else getScript('https://cdn.jsdelivr.net/npm/twikoo/dist/twikoo.all.min.js').then(init)
   }
 
   const getCount = () => {
@@ -190,33 +186,21 @@
       region: '',
       urls: [window.location.pathname],
       includeReply: false
-    }).then(function (res) {
+    }).then(res => {
       countELement.textContent = res[0].count
-    }).catch(function (err) {
-      console.error(err);
-    });
-  }
-
-  const runFn = () => {
-    init()
-    GLOBAL_CONFIG_SITE.isPost && getCount()
-  }
-
-  const loadTwikoo = () => {
-    if (typeof twikoo === 'object') {
-      setTimeout(runFn,0)
-      return
-    } 
-    getScript('https://cdn.jsdelivr.net/npm/twikoo/dist/twikoo.all.min.js').then(runFn)
+    }).catch(err => {
+      console.error(err)
+    })
   }
 
   if ('Twikoo' === 'Twikoo' || !true) {
     if (true) btf.loadComment(document.getElementById('twikoo-wrap'), loadTwikoo)
-    else loadTwikoo()
-  } else {
-    window.loadOtherComment = () => {
+    else {
       loadTwikoo()
+      GLOBAL_CONFIG_SITE.isPost && getCount()
     }
+  } else {
+    window.loadOtherComment = loadTwikoo
   }
 })()</script></div><script>window.addEventListener('load', () => {
   const changeContent = (content) => {
@@ -322,11 +306,11 @@ var pjax = new Pjax({
 
 document.addEventListener('pjax:send', function () {
 
-  // removeEventListener scroll 
-  window.tocScrollFn && window.removeEventListener('scroll', window.tocScrollFn)
-  window.scrollCollect && window.removeEventListener('scroll', scrollCollect)
+  // removeEventListener
+  btf.removeGlobalFnEvent('pjax')
+  btf.removeGlobalFnEvent('themeChange')
 
-  document.getElementById('rightside').style.cssText = "opacity: ''; transform: ''"
+  document.getElementById('rightside').classList.remove('rightside-show')
   
   if (window.aplayers) {
     for (let i = 0; i < window.aplayers.length; i++) {
@@ -372,7 +356,7 @@ document.addEventListener('pjax:complete', function () {
   typeof Prism === 'object' && Prism.highlightAll()
 })
 
-document.addEventListener('pjax:error', (e) => {
+document.addEventListener('pjax:error', e => {
   if (e.request.status === 404) {
     pjax.loadUrl('/404.html')
   }
