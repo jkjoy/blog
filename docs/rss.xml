@@ -1,5 +1,24 @@
 <?xml version='1.0' encoding='UTF-8'?>
-<rss xmlns:atom="http://www.w3.org/2005/Atom" xmlns:content="http://purl.org/rss/1.0/modules/content/" version="2.0"><channel><title>浪子博客</title><link>https://jkjoy.github.io/blog</link><description>曾梦想仗剑走天涯</description><copyright>浪子博客</copyright><docs>http://www.rssboard.org/rss-specification</docs><generator>python-feedgen</generator><image><url>https://img.imsun.org/avatar.jpg</url><title>avatar</title><link>https://jkjoy.github.io/blog</link></image><lastBuildDate>Fri, 18 Oct 2024 06:58:02 +0000</lastBuildDate><managingEditor>浪子博客</managingEditor><ttl>60</ttl><webMaster>浪子博客</webMaster><item><title>这个不是很好用</title><link>https://jkjoy.github.io/blog/post/zhe-ge-bu-shi-hen-hao-yong.html</link><description>测试一下。</description><guid isPermaLink="true">https://jkjoy.github.io/blog/post/zhe-ge-bu-shi-hen-hao-yong.html</guid><pubDate>Fri, 18 Oct 2024 06:47:42 +0000</pubDate></item><item><title>我有一个梦想</title><link>https://jkjoy.github.io/blog/post/wo-you-yi-ge-meng-xiang.html</link><description>美好的一天&#13;
+<rss xmlns:atom="http://www.w3.org/2005/Atom" xmlns:content="http://purl.org/rss/1.0/modules/content/" version="2.0"><channel><title>浪子博客</title><link>https://jkjoy.github.io/blog</link><description>曾梦想仗剑走天涯</description><copyright>浪子博客</copyright><docs>http://www.rssboard.org/rss-specification</docs><generator>python-feedgen</generator><image><url>https://img.imsun.org/avatar.jpg</url><title>avatar</title><link>https://jkjoy.github.io/blog</link></image><lastBuildDate>Fri, 18 Oct 2024 08:13:52 +0000</lastBuildDate><managingEditor>浪子博客</managingEditor><ttl>60</ttl><webMaster>浪子博客</webMaster><item><title>为moments增加一个评论通知</title><link>https://jkjoy.github.io/blog/post/wei-moments-zeng-jia-yi-ge-ping-lun-tong-zhi.html</link><description>部署方式&#13;
+```yaml&#13;
+services:&#13;
+  moments:&#13;
+    image: jkjoy/moments:latest&#13;
+    environment:&#13;
+      JWT_KEY: 'BbYS93dHHfIC1cQR8rI6'&#13;
+      WEBHOOK_URL: 'https://open.feishu.cn/open-apis/bot/v2/hook/*' #飞书webhook &#13;
+      SITE_URL: 'https://www.moments.cn' #访问地址&#13;
+      QQ_WEBHOOK_URL: 'https://http.asbid.cn/send_private_msg' #QQ机器人的API&#13;
+      QQ_USER_ID: '123456' #接收消息的QQ号码&#13;
+    ports:&#13;
+      - '3000:3000'&#13;
+    volumes:&#13;
+      - ./data:/app/data&#13;
+      - /etc/localtime:/etc/localtime:ro&#13;
+      - /etc/timezone:/etc/timezone:ro&#13;
+```&#13;
+ &#13;
+。</description><guid isPermaLink="true">https://jkjoy.github.io/blog/post/wei-moments-zeng-jia-yi-ge-ping-lun-tong-zhi.html</guid><pubDate>Fri, 18 Oct 2024 06:47:42 +0000</pubDate></item><item><title>我有一个梦想</title><link>https://jkjoy.github.io/blog/post/wo-you-yi-ge-meng-xiang.html</link><description>美好的一天&#13;
 &#13;
 从现在开始&#13;
 &#13;
