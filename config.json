@@ -8,11 +8,11 @@
     "UTC": 8,
     "urlMode": "pinyin",
     "style": "",
-    "script": "const linkElement = document.createElement('link'); linkElement.rel = 'stylesheet'; linkElement.href = 'https://cdn.imsun.org/lxgw-wenkai-screen-webfont/lxgwwenkaigbscreen.css'; linkElement.onload = function() { const styleElement = document.createElement('style'); styleElement.innerHTML = `* { font-family: \\\"LXGW WenKai Screen\\\", sans-serif !important; }`; document.head.appendChild(styleElement); }; document.head.appendChild(linkElement);",
+    "script": "<script>const linkElement = document.createElement('link'); linkElement.rel = 'stylesheet'; linkElement.href = 'https://cdn.imsun.org/lxgw-wenkai-screen-webfont/lxgwwenkaigbscreen.css'; linkElement.onload = function() { const styleElement = document.createElement('style'); styleElement.innerHTML = `* { font-family: \\\"LXGW WenKai Screen\\\", sans-serif !important; }`; document.head.appendChild(styleElement); }; document.head.appendChild(linkElement);</script>",
     "head": "",
     "allHead": "",
     "indexStyle": "",
-    "indexScript": "const linkElement = document.createElement('link'); linkElement.rel = 'stylesheet'; linkElement.href = 'https://cdn.imsun.org/lxgw-wenkai-screen-webfont/lxgwwenkaigbscreen.css'; linkElement.onload = function() { const styleElement = document.createElement('style'); styleElement.innerHTML = `* { font-family: \\\"LXGW WenKai Screen\\\", sans-serif !important; }`; document.head.appendChild(styleElement); }; document.head.appendChild(linkElement);",
+    "indexScript": "<script>const linkElement = document.createElement('link'); linkElement.rel = 'stylesheet'; linkElement.href = 'https://cdn.imsun.org/lxgw-wenkai-screen-webfont/lxgwwenkaigbscreen.css'; linkElement.onload = function() { const styleElement = document.createElement('style'); styleElement.innerHTML = `* { font-family: \\\"LXGW WenKai Screen\\\", sans-serif !important; }`; document.head.appendChild(styleElement); }; document.head.appendChild(linkElement);</script>",
     "showPostSource": 1,
     "rssSplit": "sentence",
     "GMEEK_VERSION": "last"
