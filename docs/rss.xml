@@ -1,5 +1,5 @@
 <?xml version='1.0' encoding='UTF-8'?>
-<rss xmlns:atom="http://www.w3.org/2005/Atom" xmlns:content="http://purl.org/rss/1.0/modules/content/" version="2.0"><channel><title>浪子博客</title><link>https://jkjoy.github.io/blog</link><description>曾梦想仗剑走天涯</description><copyright>浪子博客</copyright><docs>http://www.rssboard.org/rss-specification</docs><generator>python-feedgen</generator><image><url>https://img.imsun.org/avatar.jpg</url><title>avatar</title><link>https://jkjoy.github.io/blog</link></image><lastBuildDate>Fri, 18 Oct 2024 08:13:52 +0000</lastBuildDate><managingEditor>浪子博客</managingEditor><ttl>60</ttl><webMaster>浪子博客</webMaster><item><title>为moments增加一个评论通知</title><link>https://jkjoy.github.io/blog/post/wei-moments-zeng-jia-yi-ge-ping-lun-tong-zhi.html</link><description>部署方式&#13;
+<rss xmlns:atom="http://www.w3.org/2005/Atom" xmlns:content="http://purl.org/rss/1.0/modules/content/" version="2.0"><channel><title>浪子博客</title><link>https://jkjoy.github.io/blog</link><description>曾梦想仗剑走天涯</description><copyright>浪子博客</copyright><docs>http://www.rssboard.org/rss-specification</docs><generator>python-feedgen</generator><image><url>https://img.imsun.org/avatar.jpg</url><title>avatar</title><link>https://jkjoy.github.io/blog</link></image><lastBuildDate>Fri, 18 Oct 2024 08:25:04 +0000</lastBuildDate><managingEditor>浪子博客</managingEditor><ttl>60</ttl><webMaster>浪子博客</webMaster><item><title>为moments增加一个评论通知</title><link>https://jkjoy.github.io/blog/post/wei-moments-zeng-jia-yi-ge-ping-lun-tong-zhi.html</link><description>部署方式&#13;
 ```yaml&#13;
 services:&#13;
   moments:&#13;
@@ -17,7 +17,16 @@ services:&#13;
       - /etc/localtime:/etc/localtime:ro&#13;
       - /etc/timezone:/etc/timezone:ro&#13;
 ```&#13;
- &#13;
+ 没有修改原版的数据库,使用系统变量读取,&#13;
+&#13;
+`WEBHOOK_URL`为你使用的`webhook`地址, 可以是`飞书webhook`, 也可以是其他的. &#13;
+`SITE_URL`为你的moments的访问地址, 可以是域名,也可以是ip地址.用来拼接memo的访问地址&#13;
+&#13;
+`QQ_WEBHOOK_URL`为你使用的QQ机器人的API地址,需要自行部署,或者使用公共服务 使用gocqhttp的API接口 &#13;
+&#13;
+端点地址`/send_private_msg`时`QQ_USER_ID`为你接收消息的QQ号码.&#13;
+&#13;
+ 端点`/send_group_msg`时,`QQ_USER_ID`为你接收消息的QQ群号码.&#13;
 。</description><guid isPermaLink="true">https://jkjoy.github.io/blog/post/wei-moments-zeng-jia-yi-ge-ping-lun-tong-zhi.html</guid><pubDate>Fri, 18 Oct 2024 06:47:42 +0000</pubDate></item><item><title>我有一个梦想</title><link>https://jkjoy.github.io/blog/post/wo-you-yi-ge-meng-xiang.html</link><description>美好的一天&#13;
 &#13;
 从现在开始&#13;

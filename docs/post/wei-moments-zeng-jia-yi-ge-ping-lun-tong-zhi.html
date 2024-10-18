@@ -28,7 +28,16 @@ services:
       - /etc/localtime:/etc/localtime:ro
       - /etc/timezone:/etc/timezone:ro
 ```
- 
+ 没有修改原版的数据库,使用系统变量读取,
+
+`WEBHOOK_URL`为你使用的`webhook`地址, 可以是`飞书webhook`, 也可以是其他的. 
+`SITE_URL`为你的moments的访问地址, 可以是域名,也可以是ip地址.用来拼接memo的访问地址
+
+`QQ_WEBHOOK_URL`为你使用的QQ机器人的API地址,需要自行部署,或者使用公共服务 使用gocqhttp的API接口 
+
+端点地址`/send_private_msg`时`QQ_USER_ID`为你接收消息的QQ号码.
+
+ 端点`/send_group_msg`时,`QQ_USER_ID`为你接收消息的QQ群号码.
 。">
 <meta property="og:title" content="为moments增加一个评论通知">
 <meta property="og:description" content="部署方式
@@ -49,7 +58,16 @@ services:
       - /etc/localtime:/etc/localtime:ro
       - /etc/timezone:/etc/timezone:ro
 ```
- 
+ 没有修改原版的数据库,使用系统变量读取,
+
+`WEBHOOK_URL`为你使用的`webhook`地址, 可以是`飞书webhook`, 也可以是其他的. 
+`SITE_URL`为你的moments的访问地址, 可以是域名,也可以是ip地址.用来拼接memo的访问地址
+
+`QQ_WEBHOOK_URL`为你使用的QQ机器人的API地址,需要自行部署,或者使用公共服务 使用gocqhttp的API接口 
+
+端点地址`/send_private_msg`时`QQ_USER_ID`为你接收消息的QQ号码.
+
+ 端点`/send_group_msg`时,`QQ_USER_ID`为你接收消息的QQ群号码.
 。">
 <meta property="og:type" content="article">
 <meta property="og:url" content="https://jkjoy.github.io/blog/post/wei-moments-zeng-jia-yi-ge-ping-lun-tong-zhi.html">
@@ -136,7 +154,13 @@ body{box-sizing: border-box;min-width: 200px;max-width: 900px;margin: 20px auto;
     <span class="pl-ent">volumes</span>:
       - <span class="pl-s">./data:/app/data</span>
       - <span class="pl-s">/etc/localtime:/etc/localtime:ro</span>
-      - <span class="pl-s">/etc/timezone:/etc/timezone:ro</span></pre></div></div>
+      - <span class="pl-s">/etc/timezone:/etc/timezone:ro</span></pre></div>
+<p>没有修改原版的数据库,使用系统变量读取,</p>
+<p><code class="notranslate">WEBHOOK_URL</code>为你使用的<code class="notranslate">webhook</code>地址, 可以是<code class="notranslate">飞书webhook</code>, 也可以是其他的.<br>
+<code class="notranslate">SITE_URL</code>为你的moments的访问地址, 可以是域名,也可以是ip地址.用来拼接memo的访问地址</p>
+<p><code class="notranslate">QQ_WEBHOOK_URL</code>为你使用的QQ机器人的API地址,需要自行部署,或者使用公共服务 使用gocqhttp的API接口</p>
+<p>端点地址<code class="notranslate">/send_private_msg</code>时<code class="notranslate">QQ_USER_ID</code>为你接收消息的QQ号码.</p>
+<p>端点<code class="notranslate">/send_group_msg</code>时,<code class="notranslate">QQ_USER_ID</code>为你接收消息的QQ群号码.</p></div>
 <div style="font-size:small;margin-top:8px;float:right;"></div>
 
 <button class="btn btn-block" type="button" onclick="openComments()" id="cmButton">评论</button>
