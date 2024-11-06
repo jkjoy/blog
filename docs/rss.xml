@@ -1,5 +1,23 @@
 <?xml version='1.0' encoding='UTF-8'?>
-<rss xmlns:atom="http://www.w3.org/2005/Atom" xmlns:content="http://purl.org/rss/1.0/modules/content/" version="2.0"><channel><title>浪子博客</title><link>https://jkjoy.github.io/blog</link><description>曾梦想仗剑走天涯</description><copyright>浪子博客</copyright><docs>http://www.rssboard.org/rss-specification</docs><generator>python-feedgen</generator><image><url>https://img.imsun.org/avatar.jpg</url><title>avatar</title><link>https://jkjoy.github.io/blog</link></image><lastBuildDate>Fri, 18 Oct 2024 08:25:04 +0000</lastBuildDate><managingEditor>浪子博客</managingEditor><ttl>60</ttl><webMaster>浪子博客</webMaster><item><title>为moments增加一个评论通知</title><link>https://jkjoy.github.io/blog/post/wei-moments-zeng-jia-yi-ge-ping-lun-tong-zhi.html</link><description>部署方式&#13;
+<rss xmlns:atom="http://www.w3.org/2005/Atom" xmlns:content="http://purl.org/rss/1.0/modules/content/" version="2.0"><channel><title>浪子博客</title><link>https://jkjoy.github.io/blog</link><description>曾梦想仗剑走天涯</description><copyright>浪子博客</copyright><docs>http://www.rssboard.org/rss-specification</docs><generator>python-feedgen</generator><image><url>https://img.imsun.org/avatar.jpg</url><title>avatar</title><link>https://jkjoy.github.io/blog</link></image><lastBuildDate>Wed, 06 Nov 2024 06:37:04 +0000</lastBuildDate><managingEditor>浪子博客</managingEditor><ttl>60</ttl><webMaster>浪子博客</webMaster><item><title>使用memos构建一个朋友圈主题</title><link>https://jkjoy.github.io/blog/post/shi-yong-memos-gou-jian-yi-ge-peng-you-quan-zhu-ti.html</link><description>#memos&#13;
+&#13;
+## 项目地址&#13;
+https://github.com/jkjoy/memos&#13;
+&#13;
+修改一下参数&#13;
+```js&#13;
+        const memos = {&#13;
+                            host: 'https://memos.ee', //为memos地址&#13;
+                            limit: '1000', // memos数量&#13;
+                            creatorId: '3', //用户ID&#13;
+                            domId: '#posts', //默认&#13;
+                            twikoo: 'https://t.memos.ee', //twikoo 评论&#13;
+                        };&#13;
+```&#13;
+&#13;
+## 演示地址&#13;
+&#13;
+https://jkjoy.github.io/memos。</description><guid isPermaLink="true">https://jkjoy.github.io/blog/post/shi-yong-memos-gou-jian-yi-ge-peng-you-quan-zhu-ti.html</guid><pubDate>Wed, 06 Nov 2024 06:36:37 +0000</pubDate></item><item><title>为moments增加一个评论通知</title><link>https://jkjoy.github.io/blog/post/wei-moments-zeng-jia-yi-ge-ping-lun-tong-zhi.html</link><description>部署方式&#13;
 ```yaml&#13;
 services:&#13;
   moments:&#13;
