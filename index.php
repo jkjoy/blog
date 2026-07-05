@@ -981,8 +981,12 @@ function archive_groups(): array
     return $groups;
 }
 
-function public_logo_url(): string
+function theme_logo_url(): string
 {
+    if (is_file(__DIR__ . '/logo.png')) {
+        return asset_url('logo.png');
+    }
+
     return trim(setting('logo_url', default_settings()['logo_url'])) ?: default_settings()['logo_url'];
 }
 
@@ -1234,7 +1238,7 @@ function render_layout(string $title, string $content, array $options = []): voi
           <div class="site-description">
             <div class="site-intro">
               <a class="site-avatar-link" href="<?= h(url_for('home')) ?>" aria-label="<?= h($siteName) ?>">
-                <img class="site-avatar" src="<?= h(public_logo_url()) ?>" width="80" height="80" alt="<?= h($siteName) ?>">
+                <img class="site-avatar" src="<?= h(theme_logo_url()) ?>" width="80" height="80" alt="<?= h($siteName) ?>">
               </a>
               <div class="site-copy">
                 <h2><span><?= h(public_quote()) ?></span></h2>
@@ -1290,19 +1294,21 @@ function render_layout(string $title, string $content, array $options = []): voi
     <div class="site-frame">
       <header class="site-header">
         <div class="site-header__inner">
-          <a class="site-brand" href="<?= h(url_for('home')) ?>"><?= h($siteName) ?></a>
-          <nav class="site-nav" aria-label="Primary">
-            <a class="nav-link<?= $active === 'home' ? ' is-active' : '' ?>" href="<?= h(url_for('home')) ?>">首页</a>
-            <a class="nav-link<?= $active === 'archives' ? ' is-active' : '' ?>" href="<?= h(url_for('archives')) ?>">归档</a>
-            <?php foreach ($navPages as $page): ?>
-              <a class="nav-link<?= $active === 'page:' . $page['slug'] ? ' is-active' : '' ?>" href="<?= h(content_permalink($page)) ?>"><?= h($page['title']) ?></a>
-            <?php endforeach; ?>
-            <a class="nav-link<?= $active === 'rss' ? ' is-active' : '' ?>" href="<?= h(url_for('rss')) ?>">RSS</a>
+          <a class="site-brand" href="<?= h($admin ? url_for('admin') : url_for('home')) ?>">
+            <img class="site-brand__logo" src="<?= h(theme_logo_url()) ?>" width="44" height="44" alt="<?= h($siteName) ?>">
+            <span class="site-brand__copy">
+              <strong class="site-brand__title"><?= h($siteName) ?></strong>
+              <span class="site-brand__meta"><?= $admin ? 'Content Admin' : 'Admin Entry' ?></span>
+            </span>
+          </a>
+          <nav class="site-nav site-nav--admin" aria-label="Primary">
             <?php if ($admin): ?>
-              <a class="nav-link nav-link--pill<?= in_array($active, ['write', 'edit'], true) ? ' is-active' : '' ?>" href="<?= h(url_for('write')) ?>">新文章</a>
-              <a class="nav-link<?= $active === 'admin' ? ' is-active' : '' ?>" href="<?= h(url_for('admin')) ?>">后台</a>
+              <a class="nav-link<?= $active === 'admin' ? ' is-active' : '' ?>" href="<?= h(url_for('admin')) ?>">内容管理</a>
+              <a class="nav-link nav-link--pill<?= in_array($active, ['write', 'edit'], true) ? ' is-active' : '' ?>" href="<?= h(url_for('write')) ?>">新内容</a>
+              <a class="nav-link" href="<?= h(url_for('home')) ?>">查看站点</a>
               <a class="nav-link" href="<?= h(url_for('logout')) ?>">退出</a>
             <?php else: ?>
+              <a class="nav-link" href="<?= h(url_for('home')) ?>">返回首页</a>
               <a class="nav-link<?= $active === 'login' ? ' is-active' : '' ?>" href="<?= h(url_for('login')) ?>">登录</a>
             <?php endif; ?>
           </nav>
@@ -1705,13 +1711,25 @@ function render_admin_page(): void
 
     $metrics = admin_metrics();
     $posts = fetch_admin_posts();
+    $siteName = setting('site_name', 'Paper Notes');
 
     ob_start();
     ?>
-    <section class="hero hero--compact">
-      <p class="hero__eyebrow">Dashboard</p>
-      <h1 class="hero__title">写作后台</h1>
-      <p class="hero__lead">管理站点信息、草稿、已发布文章和定时发布内容。</p>
+    <section class="panel admin-masthead">
+      <div class="panel__body admin-masthead__body">
+        <div class="admin-masthead__intro">
+          <img class="admin-masthead__logo" src="<?= h(theme_logo_url()) ?>" width="72" height="72" alt="<?= h($siteName) ?>">
+          <div class="admin-masthead__copy">
+            <p class="admin-masthead__eyebrow">Content Studio</p>
+            <h1 class="admin-masthead__title">写作后台</h1>
+            <p class="admin-masthead__lead">管理站点信息、草稿、已发布文章和定时发布内容。</p>
+          </div>
+        </div>
+        <div class="admin-masthead__actions">
+          <a class="button" href="<?= h(url_for('write')) ?>">新内容</a>
+          <a class="button button--secondary" href="<?= h(url_for('home')) ?>">查看站点</a>
+        </div>
+      </div>
     </section>
 
     <div class="admin-grid">
@@ -1766,15 +1784,19 @@ function render_admin_page(): void
               <input id="site_url" name="site_url" type="url" value="<?= h(setting('site_url')) ?>" placeholder="https://example.com/blog">
               <p class="field-hint">RSS 会优先使用这里的绝对地址，子目录部署时请带上完整路径。</p>
             </div>
-            <div class="field-grid">
-              <div class="field">
-                <label for="logo_url">头像地址</label>
-                <input id="logo_url" name="logo_url" type="url" value="<?= h(setting('logo_url', default_settings()['logo_url'])) ?>" placeholder="https://example.com/avatar.jpg">
+            <div class="field">
+              <label>顶部 Logo</label>
+              <div class="settings-logo">
+                <img class="settings-logo__preview" src="<?= h(theme_logo_url()) ?>" width="56" height="56" alt="<?= h($siteName) ?>">
+                <div class="settings-logo__copy">
+                  <strong>logo.png</strong>
+                  <p class="field-hint">后台和前台顶部统一读取项目根目录下的本地文件 `logo.png`。</p>
+                </div>
               </div>
-              <div class="field">
-                <label for="footer_beian">备案号</label>
-                <input id="footer_beian" name="footer_beian" type="text" value="<?= h(setting('footer_beian')) ?>" placeholder="京 ICP 备 12345678 号">
-              </div>
+            </div>
+            <div class="field">
+              <label for="footer_beian">备案号</label>
+              <input id="footer_beian" name="footer_beian" type="text" value="<?= h(setting('footer_beian')) ?>" placeholder="京 ICP 备 12345678 号">
             </div>
             <div class="field-grid">
               <div class="field">
@@ -2094,7 +2116,7 @@ switch ($action) {
             'site_name' => $siteName !== '' ? $siteName : default_settings()['site_name'],
             'author_name' => $authorName !== '' ? $authorName : default_settings()['author_name'],
             'site_url' => trim((string)($_POST['site_url'] ?? '')),
-            'logo_url' => trim((string)($_POST['logo_url'] ?? default_settings()['logo_url'])),
+            'logo_url' => default_settings()['logo_url'],
             'footer_beian' => trim((string)($_POST['footer_beian'] ?? '')),
             'posts_per_page' => (string)$postsPerPage,
             'pretty_url' => $prettyUrl,

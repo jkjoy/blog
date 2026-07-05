@@ -24,7 +24,7 @@ function i_default_settings(): array
         'site_description' => 'A simple PHP + SQLite blog inspired by Hugo Paper.',
         'home_intro' => '安静地写点东西，保留足够留白，让文章本身站到前面。',
         'site_footer' => '',
-        'logo_url' => 'https://jihulab.com/uploads/-/system/user/avatar/8308/avatar.png?width=400',
+        'logo_url' => './logo.png',
         'footer_beian' => '',
         'posts_per_page' => '6',
         'pretty_url' => '0',
