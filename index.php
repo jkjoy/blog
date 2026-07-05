@@ -1218,6 +1218,11 @@ function render_layout(string $title, string $content, array $options = []): voi
     $admin = current_admin();
     $navPages = fetch_nav_pages();
     $status = (int)($options['status'] ?? 200);
+    $bodyClass = $mode === 'public' ? 'theme-public' : 'theme-admin';
+
+    if ($mode !== 'public' && !$admin) {
+        $bodyClass .= ' theme-admin--guest';
+    }
 
     http_response_code($status);
     ?>
@@ -1230,7 +1235,7 @@ function render_layout(string $title, string $content, array $options = []): voi
   <title><?= h($fullTitle) ?></title>
   <link rel="stylesheet" href="<?= h(asset_url('index.css')) ?>?v=<?= h(APP_VERSION) ?>">
 </head>
-<body>
+<body class="<?= h($bodyClass) ?>">
   <?php if ($mode === 'public'): ?>
     <div class="main">
       <div class="container">
@@ -1335,6 +1340,79 @@ function render_layout(string $title, string $content, array $options = []): voi
 </html>
 <?php
     exit;
+}
+
+function render_admin_sidebar(string $active, array $summary = []): string
+{
+    $links = [
+        [
+            'label' => '内容管理',
+            'note' => '文章与页面',
+            'href' => url_for('admin'),
+            'active' => $active === 'admin',
+        ],
+        [
+            'label' => '写新内容',
+            'note' => '发布文章或页面',
+            'href' => url_for('write'),
+            'active' => in_array($active, ['write', 'edit'], true),
+        ],
+        [
+            'label' => '查看站点',
+            'note' => '打开前台',
+            'href' => url_for('home'),
+            'active' => false,
+        ],
+        [
+            'label' => '退出登录',
+            'note' => '结束当前会话',
+            'href' => url_for('logout'),
+            'active' => false,
+        ],
+    ];
+
+    ob_start();
+    ?>
+    <aside class="admin-side admin-animate admin-animate--1">
+      <section class="admin-side__panel">
+        <p class="admin-side__eyebrow">管理导航</p>
+        <nav class="admin-side__nav" aria-label="Admin">
+          <?php foreach ($links as $link): ?>
+            <a class="admin-side__link<?= $link['active'] ? ' is-active' : '' ?>" href="<?= h((string)$link['href']) ?>"<?= $link['active'] ? ' aria-current="page"' : '' ?>>
+              <strong><?= h((string)$link['label']) ?></strong>
+              <span><?= h((string)$link['note']) ?></span>
+            </a>
+          <?php endforeach; ?>
+        </nav>
+      </section>
+
+      <?php if ($summary !== []): ?>
+        <section class="admin-side__panel admin-side__panel--subtle">
+          <p class="admin-side__eyebrow"><?= h((string)($summary['title'] ?? '说明')) ?></p>
+
+          <?php if (!empty($summary['stats']) && is_array($summary['stats'])): ?>
+            <dl class="admin-side__stats">
+              <?php foreach ($summary['stats'] as $item): ?>
+                <?php if (!is_array($item)) { continue; } ?>
+                <div>
+                  <dt><?= h((string)($item['label'] ?? '')) ?></dt>
+                  <dd><?= h((string)($item['value'] ?? '')) ?></dd>
+                </div>
+              <?php endforeach; ?>
+            </dl>
+          <?php elseif (!empty($summary['items']) && is_array($summary['items'])): ?>
+            <ul class="admin-side__list">
+              <?php foreach ($summary['items'] as $item): ?>
+                <li><?= h((string)$item) ?></li>
+              <?php endforeach; ?>
+            </ul>
+          <?php endif; ?>
+        </section>
+      <?php endif; ?>
+    </aside>
+    <?php
+
+    return (string)ob_get_clean();
 }
 
 function simple_error_page(string $title, string $message, int $status = 400): void
@@ -1668,34 +1746,44 @@ function render_login_page(string $error = '', array $form = []): void
 {
     ob_start();
     ?>
-    <section class="hero hero--compact">
-      <p class="hero__eyebrow">Admin</p>
-      <h1 class="hero__title">登录后台</h1>
-      <p class="hero__lead">只保留最小管理面：登录、写作、编辑、发布。</p>
-    </section>
+    <div class="auth-layout">
+      <section class="hero hero--compact auth-intro admin-animate admin-animate--1">
+        <p class="hero__eyebrow">Admin</p>
+        <h1 class="hero__title">登录后台</h1>
+        <p class="hero__lead">保留最小管理面，专注写作、编辑、发布和站点设置。</p>
+        <ul class="auth-points">
+          <li>登录后可管理文章、独立页面和站点信息。</li>
+          <li>支持草稿、定时发布和伪静态设置。</li>
+        </ul>
+      </section>
 
-    <section class="panel auth-panel">
-      <div class="panel__body">
-        <?php if ($error !== ''): ?>
-          <div class="flash flash--error"><?= h($error) ?></div>
-        <?php endif; ?>
+      <section class="panel auth-panel admin-animate admin-animate--2">
+        <div class="panel__header">
+          <h2>账号登录</h2>
+          <p class="panel__meta">使用安装时创建的管理员账号。</p>
+        </div>
+        <div class="panel__body">
+          <?php if ($error !== ''): ?>
+            <div class="flash flash--error"><?= h($error) ?></div>
+          <?php endif; ?>
 
-        <form class="form-stack" method="post" action="<?= h(url_for('login')) ?>">
-          <?= csrf_field() ?>
-          <div class="field">
-            <label for="username">用户名</label>
-            <input id="username" name="username" type="text" value="<?= h((string)($form['username'] ?? '')) ?>" required>
-          </div>
-          <div class="field">
-            <label for="password">密码</label>
-            <input id="password" name="password" type="password" required>
-          </div>
-          <div class="action-row">
-            <button class="button" type="submit">登录</button>
-          </div>
-        </form>
-      </div>
-    </section>
+          <form class="form-stack" method="post" action="<?= h(url_for('login')) ?>">
+            <?= csrf_field() ?>
+            <div class="field">
+              <label for="username">用户名</label>
+              <input id="username" name="username" type="text" value="<?= h((string)($form['username'] ?? '')) ?>" autocomplete="username" required>
+            </div>
+            <div class="field">
+              <label for="password">密码</label>
+              <input id="password" name="password" type="password" autocomplete="current-password" required>
+            </div>
+            <div class="action-row action-row--start">
+              <button class="button" type="submit">登录</button>
+            </div>
+          </form>
+        </div>
+      </section>
+    </div>
     <?php
     $content = (string)ob_get_clean();
 
@@ -1712,199 +1800,223 @@ function render_admin_page(): void
     $metrics = admin_metrics();
     $posts = fetch_admin_posts();
     $siteName = setting('site_name', 'Paper Notes');
+    $sidebar = render_admin_sidebar('admin', [
+        'title' => '站点概况',
+        'stats' => [
+            ['label' => '总内容', 'value' => (string)$metrics['total']],
+            ['label' => '已发布', 'value' => (string)$metrics['published']],
+            ['label' => '草稿 / 定时', 'value' => (string)($metrics['drafts'] + $metrics['scheduled'])],
+            ['label' => '独立页面', 'value' => (string)$metrics['pages']],
+        ],
+    ]);
 
     ob_start();
     ?>
-    <section class="panel admin-masthead">
-      <div class="panel__body admin-masthead__body">
-        <div class="admin-masthead__intro">
-          <img class="admin-masthead__logo" src="<?= h(theme_logo_url()) ?>" width="72" height="72" alt="<?= h($siteName) ?>">
-          <div class="admin-masthead__copy">
-            <p class="admin-masthead__eyebrow">Content Studio</p>
-            <h1 class="admin-masthead__title">写作后台</h1>
-            <p class="admin-masthead__lead">管理站点信息、草稿、已发布文章和定时发布内容。</p>
-          </div>
-        </div>
-        <div class="admin-masthead__actions">
-          <a class="button" href="<?= h(url_for('write')) ?>">新内容</a>
-          <a class="button button--secondary" href="<?= h(url_for('home')) ?>">查看站点</a>
-        </div>
-      </div>
-    </section>
+    <div class="admin-shell">
+      <?= $sidebar ?>
 
-    <div class="admin-grid">
-      <section class="panel">
-        <div class="panel__header">
-          <h2>概览</h2>
-        </div>
-        <div class="panel__body">
-          <div class="metric-grid">
-            <div class="metric-card">
-              <span class="metric-card__label">总内容</span>
-              <strong class="metric-card__value"><?= h((string)$metrics['total']) ?></strong>
-            </div>
-            <div class="metric-card">
-              <span class="metric-card__label">已发布文章</span>
-              <strong class="metric-card__value"><?= h((string)$metrics['published']) ?></strong>
-            </div>
-            <div class="metric-card">
-              <span class="metric-card__label">独立页面</span>
-              <strong class="metric-card__value"><?= h((string)$metrics['pages']) ?></strong>
-            </div>
-            <div class="metric-card">
-              <span class="metric-card__label">草稿 / 定时</span>
-              <strong class="metric-card__value"><?= h((string)($metrics['drafts'] + $metrics['scheduled'])) ?></strong>
-            </div>
-          </div>
-          <div class="action-row action-row--start">
-            <a class="button" href="<?= h(url_for('write')) ?>">新内容</a>
-          </div>
-        </div>
-      </section>
-
-      <section class="panel">
-        <div class="panel__header">
-          <h2>站点设置</h2>
-        </div>
-        <div class="panel__body">
-          <form class="form-stack" method="post" action="<?= h(url_for('save_settings')) ?>">
-            <?= csrf_field() ?>
-            <div class="field-grid">
-              <div class="field">
-                <label for="site_name">站点名称</label>
-                <input id="site_name" name="site_name" type="text" value="<?= h(setting('site_name')) ?>" required>
-              </div>
-              <div class="field">
-                <label for="author_name">作者名</label>
-                <input id="author_name" name="author_name" type="text" value="<?= h(setting('author_name')) ?>" required>
-              </div>
-            </div>
-            <div class="field">
-              <label for="site_url">站点地址</label>
-              <input id="site_url" name="site_url" type="url" value="<?= h(setting('site_url')) ?>" placeholder="https://example.com/blog">
-              <p class="field-hint">RSS 会优先使用这里的绝对地址，子目录部署时请带上完整路径。</p>
-            </div>
-            <div class="field">
-              <label>顶部 Logo</label>
-              <div class="settings-logo">
-                <img class="settings-logo__preview" src="<?= h(theme_logo_url()) ?>" width="56" height="56" alt="<?= h($siteName) ?>">
-                <div class="settings-logo__copy">
-                  <strong>logo.png</strong>
-                  <p class="field-hint">后台和前台顶部统一读取项目根目录下的本地文件 `logo.png`。</p>
+      <div class="admin-main">
+        <section class="panel admin-masthead admin-animate admin-animate--2">
+          <div class="panel__body admin-masthead__body">
+            <div class="admin-masthead__intro">
+              <img class="admin-masthead__logo" src="<?= h(theme_logo_url()) ?>" width="72" height="72" alt="<?= h($siteName) ?>">
+              <div class="admin-masthead__copy">
+                <p class="admin-masthead__eyebrow">Content Studio</p>
+                <h1 class="admin-masthead__title">写作后台</h1>
+                <p class="admin-masthead__lead">管理站点信息、草稿、已发布文章和定时发布内容。</p>
+                <div class="admin-masthead__meta">
+                  <span><strong><?= h((string)$metrics['published']) ?></strong> 已发布</span>
+                  <span><strong><?= h((string)($metrics['drafts'] + $metrics['scheduled'])) ?></strong> 草稿 / 定时</span>
+                  <span><strong><?= h((string)$metrics['pages']) ?></strong> 独立页面</span>
                 </div>
               </div>
             </div>
-            <div class="field">
-              <label for="footer_beian">备案号</label>
-              <input id="footer_beian" name="footer_beian" type="text" value="<?= h(setting('footer_beian')) ?>" placeholder="京 ICP 备 12345678 号">
+            <div class="admin-masthead__actions">
+              <a class="button" href="<?= h(url_for('write')) ?>">新内容</a>
+              <a class="button button--secondary" href="<?= h(url_for('home')) ?>">查看站点</a>
             </div>
-            <div class="field-grid">
-              <div class="field">
-                <label for="posts_per_page">首页每页文章数</label>
-                <input id="posts_per_page" name="posts_per_page" type="number" min="1" max="24" value="<?= h(setting('posts_per_page', '6')) ?>">
+          </div>
+        </section>
+
+        <div class="admin-grid">
+          <section class="panel admin-list-panel admin-animate admin-animate--3">
+            <div class="panel__header">
+              <h2>概览</h2>
+              <p class="panel__meta">当前内容状态与发布节奏。</p>
+            </div>
+            <div class="panel__body">
+              <div class="metric-grid">
+                <div class="metric-card">
+                  <span class="metric-card__label">总内容</span>
+                  <strong class="metric-card__value"><?= h((string)$metrics['total']) ?></strong>
+                </div>
+                <div class="metric-card">
+                  <span class="metric-card__label">已发布文章</span>
+                  <strong class="metric-card__value"><?= h((string)$metrics['published']) ?></strong>
+                </div>
+                <div class="metric-card">
+                  <span class="metric-card__label">独立页面</span>
+                  <strong class="metric-card__value"><?= h((string)$metrics['pages']) ?></strong>
+                </div>
+                <div class="metric-card">
+                  <span class="metric-card__label">草稿 / 定时</span>
+                  <strong class="metric-card__value"><?= h((string)($metrics['drafts'] + $metrics['scheduled'])) ?></strong>
+                </div>
               </div>
-              <div class="field">
-                <label for="pretty_url">伪静态 URL</label>
-                <select id="pretty_url" name="pretty_url">
-                  <option value="0"<?= setting('pretty_url', '0') === '0' ? ' selected' : '' ?>>关闭</option>
-                  <option value="1"<?= setting('pretty_url', '0') === '1' ? ' selected' : '' ?>>开启</option>
-                </select>
-                <p class="field-hint">开启后链接会变成 `/post/slug` 这类路径，需要服务器 rewrite 支持。</p>
-              </div>
             </div>
-            <div class="field">
-              <label for="site_tagline">首页副标题</label>
-              <input id="site_tagline" name="site_tagline" type="text" value="<?= h(setting('site_tagline')) ?>">
+          </section>
+
+          <section class="panel admin-list-panel admin-animate admin-animate--4">
+            <div class="panel__header">
+              <h2>站点设置</h2>
+              <p class="panel__meta">名称、地址、首页展示与伪静态配置。</p>
             </div>
-            <div class="field">
-              <label for="site_description">站点描述</label>
-              <textarea id="site_description" name="site_description" rows="3"><?= h(setting('site_description')) ?></textarea>
+            <div class="panel__body">
+              <form class="form-stack" method="post" action="<?= h(url_for('save_settings')) ?>">
+                <?= csrf_field() ?>
+                <div class="field-grid">
+                  <div class="field">
+                    <label for="site_name">站点名称</label>
+                    <input id="site_name" name="site_name" type="text" value="<?= h(setting('site_name')) ?>" required>
+                  </div>
+                  <div class="field">
+                    <label for="author_name">作者名</label>
+                    <input id="author_name" name="author_name" type="text" value="<?= h(setting('author_name')) ?>" required>
+                  </div>
+                </div>
+                <div class="field">
+                  <label for="site_url">站点地址</label>
+                  <input id="site_url" name="site_url" type="url" value="<?= h(setting('site_url')) ?>" placeholder="https://example.com/blog">
+                  <p class="field-hint">RSS 会优先使用这里的绝对地址，子目录部署时请带上完整路径。</p>
+                </div>
+                <div class="field">
+                  <label>顶部 Logo</label>
+                  <div class="settings-logo">
+                    <img class="settings-logo__preview" src="<?= h(theme_logo_url()) ?>" width="56" height="56" alt="<?= h($siteName) ?>">
+                    <div class="settings-logo__copy">
+                      <strong>logo.png</strong>
+                      <p class="field-hint">后台和前台顶部统一读取项目根目录下的本地文件 `logo.png`。</p>
+                    </div>
+                  </div>
+                </div>
+                <div class="field">
+                  <label for="footer_beian">备案号</label>
+                  <input id="footer_beian" name="footer_beian" type="text" value="<?= h(setting('footer_beian')) ?>" placeholder="京 ICP 备 12345678 号">
+                </div>
+                <div class="field-grid">
+                  <div class="field">
+                    <label for="posts_per_page">首页每页文章数</label>
+                    <input id="posts_per_page" name="posts_per_page" type="number" min="1" max="24" value="<?= h(setting('posts_per_page', '6')) ?>">
+                  </div>
+                  <div class="field">
+                    <label for="pretty_url">伪静态 URL</label>
+                    <select id="pretty_url" name="pretty_url">
+                      <option value="0"<?= setting('pretty_url', '0') === '0' ? ' selected' : '' ?>>关闭</option>
+                      <option value="1"<?= setting('pretty_url', '0') === '1' ? ' selected' : '' ?>>开启</option>
+                    </select>
+                    <p class="field-hint">开启后链接会变成 `/post/slug` 这类路径，需要服务器 rewrite 支持。</p>
+                  </div>
+                </div>
+                <div class="field">
+                  <label for="site_tagline">首页副标题</label>
+                  <input id="site_tagline" name="site_tagline" type="text" value="<?= h(setting('site_tagline')) ?>">
+                </div>
+                <div class="field">
+                  <label for="site_description">站点描述</label>
+                  <textarea id="site_description" name="site_description" rows="3"><?= h(setting('site_description')) ?></textarea>
+                </div>
+                <div class="field">
+                  <label for="home_intro">头部一句话</label>
+                  <textarea id="home_intro" name="home_intro" rows="4"><?= h(setting('home_intro')) ?></textarea>
+                </div>
+                <div class="field">
+                  <label for="site_footer">页脚文案</label>
+                  <input id="site_footer" name="site_footer" type="text" value="<?= h(setting('site_footer')) ?>" placeholder="支持 {year} 占位符">
+                </div>
+                <div class="action-row">
+                  <button class="button" type="submit">保存设置</button>
+                </div>
+              </form>
             </div>
-            <div class="field">
-              <label for="home_intro">头部一句话</label>
-              <textarea id="home_intro" name="home_intro" rows="4"><?= h(setting('home_intro')) ?></textarea>
-            </div>
-            <div class="field">
-              <label for="site_footer">页脚文案</label>
-              <input id="site_footer" name="site_footer" type="text" value="<?= h(setting('site_footer')) ?>" placeholder="支持 {year} 占位符">
-            </div>
-            <div class="action-row">
-              <button class="button" type="submit">保存设置</button>
-            </div>
-          </form>
+          </section>
         </div>
-      </section>
+
+        <section class="panel admin-list-panel admin-animate admin-animate--5">
+          <div class="panel__header">
+            <div class="admin-head">
+              <div class="admin-head-left">
+                <h2>内容管理</h2>
+                <p class="panel__meta">最近更新的文章和独立页面。</p>
+              </div>
+              <a class="button button--secondary" href="<?= h(url_for('write')) ?>">新内容</a>
+            </div>
+          </div>
+          <div class="panel__body panel__body--flush">
+            <?php if ($posts): ?>
+              <div class="table-wrap">
+                <table class="admin-table">
+                  <thead>
+                  <tr>
+                    <th>类型</th>
+                    <th>标题</th>
+                    <th>状态</th>
+                    <th>更新时间</th>
+                    <th>操作</th>
+                  </tr>
+                  </thead>
+                  <tbody>
+                  <?php foreach ($posts as $post): ?>
+                    <?php $state = post_state($post); ?>
+                    <tr>
+                      <td>
+                        <span class="content-kind content-kind--<?= h(content_kind($post)) ?>"><?= h(content_type_label($post)) ?></span>
+                      </td>
+                      <td>
+                        <div class="table-title">
+                          <strong><?= h($post['title']) ?></strong>
+                          <span><?= h(content_public_path($post)) ?></span>
+                        </div>
+                      </td>
+                      <td>
+                        <span class="status-badge status-badge--<?= h($state['class']) ?>"><?= h($state['label']) ?></span>
+                      </td>
+                      <td>
+                        <time datetime="<?= h(date(DATE_ATOM, (int)$post['updated_at'])) ?>"><?= h(pretty_date((int)$post['updated_at'], true)) ?></time>
+                      </td>
+                      <td>
+                        <div class="table-actions">
+                          <a class="button button--ghost" href="<?= h(content_permalink($post)) ?>">查看</a>
+                          <a class="button button--ghost" href="<?= h(url_for('edit', ['id' => $post['id']])) ?>">编辑</a>
+
+                          <form method="post" action="<?= h(url_for('change_status')) ?>">
+                            <?= csrf_field() ?>
+                            <input type="hidden" name="id" value="<?= h($post['id']) ?>">
+                            <input type="hidden" name="status" value="<?= h((string)$post['status'] === 'published' ? 'draft' : 'published') ?>">
+                            <button class="button button--ghost" type="submit"><?= (string)$post['status'] === 'published' ? '转草稿' : '发布' ?></button>
+                          </form>
+
+                          <form method="post" action="<?= h(url_for('delete_post')) ?>" onsubmit="return confirm('确定删除这篇文章吗？');">
+                            <?= csrf_field() ?>
+                            <input type="hidden" name="id" value="<?= h($post['id']) ?>">
+                            <button class="button button--danger" type="submit">删除</button>
+                          </form>
+                        </div>
+                      </td>
+                    </tr>
+                  <?php endforeach; ?>
+                  </tbody>
+                </table>
+              </div>
+            <?php else: ?>
+              <div class="empty-state empty-state--inside">
+                <p>还没有文章。</p>
+                <a class="button" href="<?= h(url_for('write')) ?>">开始写作</a>
+              </div>
+            <?php endif; ?>
+          </div>
+        </section>
+      </div>
     </div>
-
-    <section class="panel">
-      <div class="panel__header panel__header--inline">
-        <h2>内容管理</h2>
-        <a class="button button--secondary" href="<?= h(url_for('write')) ?>">新内容</a>
-      </div>
-      <div class="panel__body panel__body--flush">
-        <?php if ($posts): ?>
-          <div class="table-wrap">
-            <table class="admin-table">
-              <thead>
-              <tr>
-                <th>类型</th>
-                <th>标题</th>
-                <th>状态</th>
-                <th>更新时间</th>
-                <th>操作</th>
-              </tr>
-              </thead>
-              <tbody>
-              <?php foreach ($posts as $post): ?>
-                <?php $state = post_state($post); ?>
-                <tr>
-                  <td>
-                    <span class="content-kind content-kind--<?= h(content_kind($post)) ?>"><?= h(content_type_label($post)) ?></span>
-                  </td>
-                  <td>
-                    <div class="table-title">
-                      <strong><?= h($post['title']) ?></strong>
-                      <span><?= h(content_public_path($post)) ?></span>
-                    </div>
-                  </td>
-                  <td>
-                    <span class="status-badge status-badge--<?= h($state['class']) ?>"><?= h($state['label']) ?></span>
-                  </td>
-                  <td>
-                    <time datetime="<?= h(date(DATE_ATOM, (int)$post['updated_at'])) ?>"><?= h(pretty_date((int)$post['updated_at'], true)) ?></time>
-                  </td>
-                  <td>
-                    <div class="table-actions">
-                      <a class="button button--ghost" href="<?= h(content_permalink($post)) ?>">查看</a>
-                      <a class="button button--ghost" href="<?= h(url_for('edit', ['id' => $post['id']])) ?>">编辑</a>
-
-                      <form method="post" action="<?= h(url_for('change_status')) ?>">
-                        <?= csrf_field() ?>
-                        <input type="hidden" name="id" value="<?= h($post['id']) ?>">
-                        <input type="hidden" name="status" value="<?= h((string)$post['status'] === 'published' ? 'draft' : 'published') ?>">
-                        <button class="button button--ghost" type="submit"><?= (string)$post['status'] === 'published' ? '转草稿' : '发布' ?></button>
-                      </form>
-
-                      <form method="post" action="<?= h(url_for('delete_post')) ?>" onsubmit="return confirm('确定删除这篇文章吗？');">
-                        <?= csrf_field() ?>
-                        <input type="hidden" name="id" value="<?= h($post['id']) ?>">
-                        <button class="button button--danger" type="submit">删除</button>
-                      </form>
-                    </div>
-                  </td>
-                </tr>
-              <?php endforeach; ?>
-              </tbody>
-            </table>
-          </div>
-        <?php else: ?>
-          <div class="empty-state empty-state--inside">
-            <p>还没有文章。</p>
-            <a class="button" href="<?= h(url_for('write')) ?>">开始写作</a>
-          </div>
-        <?php endif; ?>
-      </div>
-    </section>
     <?php
     $content = (string)ob_get_clean();
 
@@ -1932,81 +2044,110 @@ function render_editor_page(?array $existing = null, array $form = [], array $er
 
     $values = array_merge($defaults, $form);
     $isEdit = $existing !== null;
+    $siteName = setting('site_name', 'Paper Notes');
+    $sidebar = render_admin_sidebar($isEdit ? 'edit' : 'write', [
+        'title' => '写作提示',
+        'items' => [
+            'Slug 留空会按标题自动生成。',
+            '发布时间晚于当前时间会按定时发布处理。',
+            '独立页面可以不填标签。',
+        ],
+    ]);
 
     ob_start();
     ?>
-    <section class="hero hero--compact">
-      <p class="hero__eyebrow"><?= $isEdit ? 'Edit' : 'Write' ?></p>
-      <h1 class="hero__title"><?= $isEdit ? '编辑内容' : '写新内容' ?></h1>
-      <p class="hero__lead">支持基础 Markdown，可创建文章或独立页面。</p>
-    </section>
+    <div class="admin-shell">
+      <?= $sidebar ?>
 
-    <section class="panel editor-panel">
-      <div class="panel__body">
-        <?php if ($errors): ?>
-          <div class="flash flash--error">
-            <?= h(implode(' ', $errors)) ?>
-          </div>
-        <?php endif; ?>
-
-        <form class="form-stack" method="post" action="<?= h($isEdit ? url_for('edit', ['id' => $existing['id']]) : url_for('write')) ?>">
-          <?= csrf_field() ?>
-          <div class="field">
-            <label for="title">标题</label>
-            <input id="title" name="title" type="text" value="<?= h((string)$values['title']) ?>" required>
-          </div>
-
-          <div class="field-grid">
-            <div class="field">
-              <label for="kind">内容类型</label>
-              <select id="kind" name="kind">
-                <option value="post"<?= (string)$values['kind'] === 'post' ? ' selected' : '' ?>>文章</option>
-                <option value="page"<?= (string)$values['kind'] === 'page' ? ' selected' : '' ?>>独立页面</option>
-              </select>
+      <div class="admin-main">
+        <section class="panel admin-masthead admin-masthead--compact admin-animate admin-animate--2">
+          <div class="panel__body admin-masthead__body">
+            <div class="admin-masthead__intro">
+              <img class="admin-masthead__logo" src="<?= h(theme_logo_url()) ?>" width="72" height="72" alt="<?= h($siteName) ?>">
+              <div class="admin-masthead__copy">
+                <p class="admin-masthead__eyebrow"><?= $isEdit ? 'Edit' : 'Write' ?></p>
+                <h1 class="admin-masthead__title"><?= $isEdit ? '编辑内容' : '写新内容' ?></h1>
+                <p class="admin-masthead__lead">支持基础 Markdown，可创建文章或独立页面。</p>
+              </div>
             </div>
-            <div class="field">
-              <label for="slug">Slug</label>
-              <input id="slug" name="slug" type="text" value="<?= h((string)$values['slug']) ?>" placeholder="留空将自动生成">
-            </div>
-            <div class="field">
-              <label for="published_at">发布时间</label>
-              <input id="published_at" name="published_at" type="datetime-local" value="<?= h((string)$values['published_at']) ?>">
+            <div class="admin-masthead__actions">
+              <a class="button button--secondary" href="<?= h(url_for('admin')) ?>">返回后台</a>
             </div>
           </div>
+        </section>
 
-          <div class="field">
-            <label for="tags_input">标签</label>
-            <input id="tags_input" name="tags_input" type="text" value="<?= h((string)$values['tags_input']) ?>" placeholder="用逗号分隔，例如 PHP, SQLite, 随笔">
-            <p class="field-hint">独立页面可以留空，文章会用这些标签生成聚合页。</p>
+        <section class="panel editor-panel admin-animate admin-animate--3">
+          <div class="panel__header">
+            <h2><?= $isEdit ? '正文与发布设置' : '填写内容' ?></h2>
+            <p class="panel__meta">支持标题、列表、引用、链接、代码块和行内代码。</p>
           </div>
+          <div class="panel__body">
+            <?php if ($errors): ?>
+              <div class="flash flash--error">
+                <?= h(implode(' ', $errors)) ?>
+              </div>
+            <?php endif; ?>
 
-          <div class="field">
-            <label for="excerpt">摘要</label>
-            <textarea id="excerpt" name="excerpt" rows="3" placeholder="留空将自动从正文截取"><?= h((string)$values['excerpt']) ?></textarea>
-          </div>
+            <form class="form-stack" method="post" action="<?= h($isEdit ? url_for('edit', ['id' => $existing['id']]) : url_for('write')) ?>">
+              <?= csrf_field() ?>
+              <div class="field">
+                <label for="title">标题</label>
+                <input id="title" name="title" type="text" value="<?= h((string)$values['title']) ?>" required>
+              </div>
 
-          <div class="field">
-            <label for="status">状态</label>
-            <select id="status" name="status">
-              <option value="draft"<?= (string)$values['status'] === 'draft' ? ' selected' : '' ?>>草稿</option>
-              <option value="published"<?= (string)$values['status'] === 'published' ? ' selected' : '' ?>>发布</option>
-            </select>
-            <p class="field-hint">如果发布时间晚于当前时间，前台会按定时发布处理。</p>
-          </div>
+              <div class="field-grid field-grid--triple">
+                <div class="field">
+                  <label for="kind">内容类型</label>
+                  <select id="kind" name="kind">
+                    <option value="post"<?= (string)$values['kind'] === 'post' ? ' selected' : '' ?>>文章</option>
+                    <option value="page"<?= (string)$values['kind'] === 'page' ? ' selected' : '' ?>>独立页面</option>
+                  </select>
+                </div>
+                <div class="field">
+                  <label for="slug">Slug</label>
+                  <input id="slug" name="slug" type="text" value="<?= h((string)$values['slug']) ?>" placeholder="留空将自动生成">
+                </div>
+                <div class="field">
+                  <label for="published_at">发布时间</label>
+                  <input id="published_at" name="published_at" type="datetime-local" value="<?= h((string)$values['published_at']) ?>">
+                </div>
+              </div>
 
-          <div class="field">
-            <label for="content">正文</label>
-            <textarea id="content" class="editor-textarea" name="content" rows="18" required><?= h((string)$values['content']) ?></textarea>
-            <p class="field-hint">支持标题、列表、引用、链接、代码块和行内代码。</p>
-          </div>
+              <div class="field">
+                <label for="tags_input">标签</label>
+                <input id="tags_input" name="tags_input" type="text" value="<?= h((string)$values['tags_input']) ?>" placeholder="用逗号分隔，例如 PHP, SQLite, 随笔">
+                <p class="field-hint">独立页面可以留空，文章会用这些标签生成聚合页。</p>
+              </div>
 
-          <div class="action-row">
-            <button class="button" type="submit"><?= $isEdit ? '保存修改' : '创建文章' ?></button>
-            <a class="button button--secondary" href="<?= h(url_for('admin')) ?>">返回后台</a>
+              <div class="field">
+                <label for="excerpt">摘要</label>
+                <textarea id="excerpt" name="excerpt" rows="3" placeholder="留空将自动从正文截取"><?= h((string)$values['excerpt']) ?></textarea>
+              </div>
+
+              <div class="field">
+                <label for="status">状态</label>
+                <select id="status" name="status">
+                  <option value="draft"<?= (string)$values['status'] === 'draft' ? ' selected' : '' ?>>草稿</option>
+                  <option value="published"<?= (string)$values['status'] === 'published' ? ' selected' : '' ?>>发布</option>
+                </select>
+                <p class="field-hint">如果发布时间晚于当前时间，前台会按定时发布处理。</p>
+              </div>
+
+              <div class="field">
+                <label for="content">正文</label>
+                <textarea id="content" class="editor-textarea" name="content" rows="18" required><?= h((string)$values['content']) ?></textarea>
+                <p class="field-hint">支持标题、列表、引用、链接、代码块和行内代码。</p>
+              </div>
+
+              <div class="action-row">
+                <a class="button button--secondary" href="<?= h(url_for('admin')) ?>">返回后台</a>
+                <button class="button" type="submit"><?= $isEdit ? '保存修改' : '创建文章' ?></button>
+              </div>
+            </form>
           </div>
-        </form>
+        </section>
       </div>
-    </section>
+    </div>
     <?php
     $content = (string)ob_get_clean();
 
