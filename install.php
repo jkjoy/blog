@@ -24,6 +24,8 @@ function i_default_settings(): array
         'site_description' => 'A simple PHP + SQLite blog inspired by Hugo Paper.',
         'home_intro' => '安静地写点东西，保留足够留白，让文章本身站到前面。',
         'site_footer' => '',
+        'logo_url' => 'https://jihulab.com/uploads/-/system/user/avatar/8308/avatar.png?width=400',
+        'footer_beian' => '',
         'posts_per_page' => '6',
         'pretty_url' => '0',
     ];
@@ -194,7 +196,7 @@ function i_render_page(string $title, string $body): void
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title><?= i_h($title) ?></title>
-  <link rel="stylesheet" href="<?= i_h(i_asset_url('app.css')) ?>?v=v0.1.0">
+  <link rel="stylesheet" href="<?= i_h(i_asset_url('index.css')) ?>?v=v0.1.0">
 </head>
 <body>
   <div class="site-frame">

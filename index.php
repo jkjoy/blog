@@ -220,6 +220,8 @@ function default_settings(): array
         'site_description' => 'A simple PHP + SQLite blog inspired by Hugo Paper.',
         'home_intro' => '安静地写点东西，保留足够留白，让文章本身站到前面。',
         'site_footer' => '',
+        'logo_url' => './logo.png',
+        'footer_beian' => '',
         'posts_per_page' => '6',
         'pretty_url' => '0',
     ];
@@ -490,7 +492,7 @@ function site_footer_text(): string
 {
     $footer = trim(setting('site_footer'));
     if ($footer === '') {
-        $footer = '© {year} ' . setting('site_name', 'Paper Notes');
+        $footer = '© 2016 - {year} Theme is Ying';
     }
     return str_replace('{year}', date('Y'), $footer);
 }
@@ -972,11 +974,54 @@ function archive_groups(): array
     $groups = [];
 
     foreach (fetch_archive_posts() as $post) {
-        $year = date('Y', (int)$post['published_at']);
-        $groups[$year][] = $post;
+        $label = date('Y 年 m 月', (int)$post['published_at']);
+        $groups[$label][] = $post;
     }
 
     return $groups;
+}
+
+function public_logo_url(): string
+{
+    return trim(setting('logo_url', default_settings()['logo_url'])) ?: default_settings()['logo_url'];
+}
+
+function public_quote(): string
+{
+    $quote = trim(setting('home_intro'));
+
+    if ($quote === '') {
+        $quote = trim(setting('site_tagline'));
+    }
+
+    return $quote !== '' ? $quote : setting('site_name', 'Paper Notes');
+}
+
+function public_icon(string $name): string
+{
+    return match ($name) {
+        'pen' => '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3 17.25V21h3.75L17.81 9.94l-3.75-3.75L3 17.25Zm14.71-9.04a1.003 1.003 0 0 0 0-1.42l-2.5-2.5a1.003 1.003 0 0 0-1.42 0l-1.46 1.46 3.75 3.75 1.63-1.29Z" fill="currentColor"/></svg>',
+        'tag' => '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="m21 12-9 9-9-9 9-9 9 9Zm-12.59 0L12 15.59 15.59 12 12 8.41 8.41 12ZM12 10.5a1.5 1.5 0 1 0 0 3 1.5 1.5 0 0 0 0-3Z" fill="currentColor"/></svg>',
+        'rss' => '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6 18a2 2 0 1 0 0-4 2 2 0 0 0 0 4Zm-2-8v3a7 7 0 0 1 7 7h3c0-5.52-4.48-10-10-10Zm0-5v3c6.63 0 12 5.37 12 12h3C19 11.16 12.84 5 5 5H4Z" fill="currentColor"/></svg>',
+        'arrow-up' => '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 5.5 5.5 12l1.41 1.41L11 9.33V20h2V9.33l4.09 4.08L18.5 12 12 5.5Z" fill="currentColor"/></svg>',
+        default => '',
+    };
+}
+
+function render_public_post_list(array $posts): string
+{
+    ob_start();
+    ?>
+    <?php foreach ($posts as $post): ?>
+      <div class="posts">
+        <div class="post">
+          <div class="time"><?= h(date('F j, Y', (int)$post['published_at'])) ?></div>
+          <a href="<?= h(url_for('post', ['slug' => (string)$post['slug']])) ?>"><?= h((string)$post['title']) ?></a>
+        </div>
+      </div>
+    <?php endforeach; ?>
+    <?php
+    return (string)ob_get_clean();
 }
 
 function fetch_admin_posts(): array
@@ -1164,6 +1209,7 @@ function render_layout(string $title, string $content, array $options = []): voi
     $description = (string)($options['description'] ?? setting('site_description', setting('site_tagline')));
     $active = (string)($options['active'] ?? '');
     $wide = !empty($options['wide']);
+    $mode = (string)($options['mode'] ?? 'admin');
     $flash = pull_flash();
     $admin = current_admin();
     $navPages = fetch_nav_pages();
@@ -1178,45 +1224,107 @@ function render_layout(string $title, string $content, array $options = []): voi
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <meta name="description" content="<?= h($description) ?>">
   <title><?= h($fullTitle) ?></title>
-  <link rel="stylesheet" href="<?= h(asset_url('app.css')) ?>?v=<?= h(APP_VERSION) ?>">
+  <link rel="stylesheet" href="<?= h(asset_url('index.css')) ?>?v=<?= h(APP_VERSION) ?>">
 </head>
 <body>
-  <div class="site-frame">
-    <header class="site-header">
-      <div class="site-header__inner">
-        <a class="site-brand" href="<?= h(url_for('home')) ?>"><?= h($siteName) ?></a>
-        <nav class="site-nav" aria-label="Primary">
-          <a class="nav-link<?= $active === 'home' ? ' is-active' : '' ?>" href="<?= h(url_for('home')) ?>">首页</a>
-          <a class="nav-link<?= $active === 'archives' ? ' is-active' : '' ?>" href="<?= h(url_for('archives')) ?>">归档</a>
-          <?php foreach ($navPages as $page): ?>
-            <a class="nav-link<?= $active === 'page:' . $page['slug'] ? ' is-active' : '' ?>" href="<?= h(content_permalink($page)) ?>"><?= h($page['title']) ?></a>
-          <?php endforeach; ?>
-          <a class="nav-link<?= $active === 'rss' ? ' is-active' : '' ?>" href="<?= h(url_for('rss')) ?>">RSS</a>
-          <?php if ($admin): ?>
-            <a class="nav-link nav-link--pill<?= in_array($active, ['write', 'edit'], true) ? ' is-active' : '' ?>" href="<?= h(url_for('write')) ?>">新文章</a>
-            <a class="nav-link<?= $active === 'admin' ? ' is-active' : '' ?>" href="<?= h(url_for('admin')) ?>">后台</a>
-            <a class="nav-link" href="<?= h(url_for('logout')) ?>">退出</a>
-          <?php else: ?>
-            <a class="nav-link<?= $active === 'login' ? ' is-active' : '' ?>" href="<?= h(url_for('login')) ?>">登录</a>
-          <?php endif; ?>
-        </nav>
-      </div>
-    </header>
+  <?php if ($mode === 'public'): ?>
+    <div class="main">
+      <div class="container">
+        <div class="header">
+          <div class="site-description">
+            <div class="site-intro">
+              <a class="site-avatar-link" href="<?= h(url_for('home')) ?>" aria-label="<?= h($siteName) ?>">
+                <img class="site-avatar" src="<?= h(public_logo_url()) ?>" width="80" height="80" alt="<?= h($siteName) ?>">
+              </a>
+              <div class="site-copy">
+                <h2><span><?= h(public_quote()) ?></span></h2>
+              </div>
+            </div>
+            <nav class="nav social" aria-label="Quick links">
+              <ul class="flat">
+                <li>
+                  <a class="social-link<?= $active === 'tags' ? ' is-active' : '' ?>" href="<?= h(url_for('tags')) ?>" title="标签" aria-label="标签">
+                    <?= public_icon('tag') ?>
+                  </a>
+                </li>
+                <li>
+                  <a class="social-link<?= $active === 'rss' ? ' is-active' : '' ?>" href="<?= h(url_for('rss')) ?>" title="RSS" aria-label="RSS">
+                    <?= public_icon('rss') ?>
+                  </a>
+                </li>
+              </ul>
+            </nav>
+          </div>
+          <nav class="nav" aria-label="Primary">
+            <ul class="flat">
+              <li class="<?= $active === 'home' ? 'active' : '' ?>"><a href="<?= h(url_for('home')) ?>">首页</a></li>
+              <?php foreach ($navPages as $page): ?>
+                <li class="<?= $active === 'page:' . $page['slug'] ? 'active' : '' ?>">
+                  <a href="<?= h(content_permalink($page)) ?>"><?= h($page['title']) ?></a>
+                </li>
+              <?php endforeach; ?>
+            </ul>
+          </nav>
+        </div>
 
-    <main class="main-wrap<?= $wide ? ' main-wrap--wide' : '' ?>">
-      <?php if ($flash): ?>
-        <div class="flash flash--<?= h((string)$flash['type']) ?>"><?= h((string)$flash['message']) ?></div>
-      <?php endif; ?>
-      <?= $content ?>
-    </main>
+        <?php if ($flash): ?>
+          <div class="flash flash--<?= h((string)$flash['type']) ?> flash--public"><?= h((string)$flash['message']) ?></div>
+        <?php endif; ?>
 
-    <footer class="site-footer">
-      <div class="site-footer__inner">
-        <span><?= h(site_footer_text()) ?></span>
-        <span class="site-footer__meta">PHP · SQLite · <?= h(APP_VERSION) ?></span>
+        <?= $content ?>
+
+        <div class="footer">
+          <nav class="nav">
+            <?= h(site_footer_text()) ?><br>
+            <?php $beian = trim(setting('footer_beian')); ?>
+            <?php if ($beian !== ''): ?>
+              <a href="https://beian.miit.gov.cn/" target="_blank" rel="noopener noreferrer"><?= h($beian) ?></a><br>
+            <?php endif; ?>
+            <span>Powered by PHP + SQLite</span>
+          </nav>
+        </div>
       </div>
-    </footer>
-  </div>
+    </div>
+    <a id="to_top" href="#" class="to_top" aria-label="回到顶部"><?= public_icon('arrow-up') ?></a>
+  <?php else: ?>
+    <div class="site-frame">
+      <header class="site-header">
+        <div class="site-header__inner">
+          <a class="site-brand" href="<?= h(url_for('home')) ?>"><?= h($siteName) ?></a>
+          <nav class="site-nav" aria-label="Primary">
+            <a class="nav-link<?= $active === 'home' ? ' is-active' : '' ?>" href="<?= h(url_for('home')) ?>">首页</a>
+            <a class="nav-link<?= $active === 'archives' ? ' is-active' : '' ?>" href="<?= h(url_for('archives')) ?>">归档</a>
+            <?php foreach ($navPages as $page): ?>
+              <a class="nav-link<?= $active === 'page:' . $page['slug'] ? ' is-active' : '' ?>" href="<?= h(content_permalink($page)) ?>"><?= h($page['title']) ?></a>
+            <?php endforeach; ?>
+            <a class="nav-link<?= $active === 'rss' ? ' is-active' : '' ?>" href="<?= h(url_for('rss')) ?>">RSS</a>
+            <?php if ($admin): ?>
+              <a class="nav-link nav-link--pill<?= in_array($active, ['write', 'edit'], true) ? ' is-active' : '' ?>" href="<?= h(url_for('write')) ?>">新文章</a>
+              <a class="nav-link<?= $active === 'admin' ? ' is-active' : '' ?>" href="<?= h(url_for('admin')) ?>">后台</a>
+              <a class="nav-link" href="<?= h(url_for('logout')) ?>">退出</a>
+            <?php else: ?>
+              <a class="nav-link<?= $active === 'login' ? ' is-active' : '' ?>" href="<?= h(url_for('login')) ?>">登录</a>
+            <?php endif; ?>
+          </nav>
+        </div>
+      </header>
+
+      <main class="main-wrap<?= $wide ? ' main-wrap--wide' : '' ?>">
+        <?php if ($flash): ?>
+          <div class="flash flash--<?= h((string)$flash['type']) ?>"><?= h((string)$flash['message']) ?></div>
+        <?php endif; ?>
+        <?= $content ?>
+      </main>
+
+      <footer class="site-footer">
+        <div class="site-footer__inner">
+          <span><?= h(site_footer_text()) ?></span>
+          <span class="site-footer__meta">PHP · SQLite · <?= h(APP_VERSION) ?></span>
+        </div>
+      </footer>
+    </div>
+  <?php endif; ?>
+  <script src="<?= h(asset_url('index.js')) ?>?v=<?= h(APP_VERSION) ?>"></script>
 </body>
 </html>
 <?php
@@ -1227,19 +1335,18 @@ function simple_error_page(string $title, string $message, int $status = 400): v
 {
     ob_start();
     ?>
-    <section class="hero hero--compact">
-      <p class="hero__eyebrow">Error</p>
-      <h1 class="hero__title"><?= h($title) ?></h1>
-      <p class="hero__lead"><?= h($message) ?></p>
-    </section>
-    <div class="empty-state">
-      <a class="button button--secondary" href="<?= h(url_for('home')) ?>">回到首页</a>
-    </div>
+    <article class="post">
+      <h1 class="post-title"><?= h($title) ?></h1>
+      <div class="post-content">
+        <p><?= h($message) ?></p>
+        <p><a href="<?= h(url_for('home')) ?>">回到首页</a></p>
+      </div>
+    </article>
     <?php
     $content = (string)ob_get_clean();
 
     render_layout($title, $content, [
-        'active' => '',
+        'mode' => 'public',
         'status' => $status,
         'description' => $message,
     ]);
@@ -1256,7 +1363,7 @@ function render_tag_chips(array $post, string $class = 'tag-list'): string
     ?>
     <div class="<?= h($class) ?>">
       <?php foreach ($tags as $tag): ?>
-        <a class="tag-chip" href="<?= h(url_for('tag', ['slug' => $tag['slug']])) ?>">#<?= h($tag['label']) ?></a>
+        <a class="tag-chip" href="<?= h(url_for('tag', ['slug' => $tag['slug']])) ?>"><?= h($tag['label']) ?></a>
       <?php endforeach; ?>
     </div>
     <?php
@@ -1277,63 +1384,38 @@ function render_home(int $page): void
     $posts = fetch_published_posts($perPage, ($page - 1) * $perPage);
     $siteName = setting('site_name', 'Paper Notes');
     $tagline = setting('site_tagline', '');
-    $intro = setting('home_intro', setting('site_description', $tagline));
 
     ob_start();
     ?>
-    <section class="hero">
-      <p class="hero__eyebrow">Simple PHP Blog</p>
-      <h1 class="hero__title"><?= h($siteName) ?></h1>
-      <?php if ($tagline !== ''): ?>
-        <p class="hero__lead"><?= h($tagline) ?></p>
-      <?php endif; ?>
-      <?php if ($intro !== ''): ?>
-        <p class="hero__text"><?= h($intro) ?></p>
-      <?php endif; ?>
-    </section>
-
     <?php if ($posts): ?>
-      <div class="story-list">
-        <?php foreach ($posts as $index => $post): ?>
-          <article class="story-card" style="--enter-delay: <?= (int)($index * 90) ?>ms">
-            <div class="story-card__meta">
-              <time datetime="<?= h(date(DATE_ATOM, (int)$post['published_at'])) ?>"><?= h(pretty_date((int)$post['published_at'])) ?></time>
-              <span class="story-card__divider"></span>
-              <span>文章</span>
-            </div>
-            <h2 class="story-card__title">
-              <a href="<?= h(url_for('post', ['slug' => $post['slug']])) ?>"><?= h($post['title']) ?></a>
-            </h2>
-            <?php if (trim((string)$post['excerpt']) !== ''): ?>
-              <p class="story-card__excerpt"><?= h((string)$post['excerpt']) ?></p>
-            <?php endif; ?>
-            <?= render_tag_chips($post, 'story-card__tags') ?>
-          </article>
-        <?php endforeach; ?>
-      </div>
+      <article>
+        <div class="recent-posts section">
+          <h2 class="section-header">
+            随笔<?= public_icon('pen') ?>
+          </h2>
+          <?= render_public_post_list($posts) ?>
+        </div>
+      </article>
 
       <?php if ($totalPages > 1): ?>
-        <nav class="pager" aria-label="Pagination">
-          <?php if ($page > 1): ?>
-            <a class="button button--secondary" href="<?= h(home_page_url($page - 1)) ?>">较新文章</a>
-          <?php else: ?>
-            <span></span>
-          <?php endif; ?>
-
-          <span class="pager__meta"><?= h((string)$page) ?> / <?= h((string)$totalPages) ?></span>
-
-          <?php if ($page < $totalPages): ?>
-            <a class="button button--secondary" href="<?= h(home_page_url($page + 1)) ?>">更早文章</a>
-          <?php else: ?>
-            <span></span>
-          <?php endif; ?>
-        </nav>
+        <ul class="pagination">
+          <li class="page-item page-previous">
+            <?php if ($page > 1): ?>
+              <a href="<?= h(home_page_url($page - 1)) ?>">上一页</a>
+            <?php endif; ?>
+          </li>
+          <li class="page-item page-next">
+            <?php if ($page < $totalPages): ?>
+              <a href="<?= h(home_page_url($page + 1)) ?>">下一页</a>
+            <?php endif; ?>
+          </li>
+        </ul>
       <?php endif; ?>
     <?php else: ?>
-      <div class="empty-state">
+      <div class="empty-notice">
         <p>还没有已发布的文章。</p>
         <?php if (is_admin()): ?>
-          <a class="button" href="<?= h(url_for('write')) ?>">写第一篇文章</a>
+          <p><a href="<?= h(url_for('write')) ?>">写第一篇文章</a></p>
         <?php endif; ?>
       </div>
     <?php endif; ?>
@@ -1342,6 +1424,7 @@ function render_home(int $page): void
 
     render_layout($siteName, $content, [
         'active' => 'home',
+        'mode' => 'public',
         'description' => setting('site_description', $tagline),
     ]);
 }
@@ -1349,58 +1432,30 @@ function render_home(int $page): void
 function render_archives(): void
 {
     $groups = archive_groups();
-    $tags = tag_index_data();
 
     ob_start();
     ?>
-    <section class="hero hero--compact">
-      <p class="hero__eyebrow">Archive</p>
-      <h1 class="hero__title">归档</h1>
-      <p class="hero__lead">按年份快速浏览已发布文章。</p>
-    </section>
-
-    <?php if ($tags): ?>
-      <section class="panel panel--soft archive-tags-panel">
-        <div class="panel__header panel__header--inline">
-          <h2>标签</h2>
-          <a class="panel__meta" href="<?= h(url_for('tags')) ?>">查看全部</a>
-        </div>
-        <div class="panel__body">
-          <div class="tag-cloud">
-            <?php foreach (array_slice($tags, 0, 18) as $tag): ?>
-              <a class="tag-chip tag-chip--count" href="<?= h(url_for('tag', ['slug' => $tag['slug']])) ?>">
-                <span>#<?= h($tag['label']) ?></span>
-                <strong><?= h((string)$tag['count']) ?></strong>
-              </a>
-            <?php endforeach; ?>
-          </div>
-        </div>
-      </section>
-    <?php endif; ?>
-
+    <h1 class="post-title" itemprop="name headline">归档</h1>
     <?php if ($groups): ?>
-      <div class="archive-list">
-        <?php foreach ($groups as $year => $posts): ?>
-          <section class="panel panel--soft">
-            <div class="panel__header panel__header--inline">
-              <h2><?= h((string)$year) ?></h2>
-              <span class="panel__meta"><?= h((string)count($posts)) ?> 篇</span>
-            </div>
-            <div class="panel__body">
-              <ul class="archive-items">
+      <div class="post-content" itemprop="articleBody">
+        <ul>
+          <?php foreach ($groups as $label => $posts): ?>
+            <li class="archives-item">
+              <div class="archives-item-content">
+                <h3 class="archives-item-title"><?= h((string)$label) ?></h3>
                 <?php foreach ($posts as $post): ?>
-                  <li class="archive-item">
-                    <time datetime="<?= h(date(DATE_ATOM, (int)$post['published_at'])) ?>"><?= h(date('m-d', (int)$post['published_at'])) ?></time>
-                    <a href="<?= h(url_for('post', ['slug' => $post['slug']])) ?>"><?= h($post['title']) ?></a>
-                  </li>
+                  <p>
+                    <span class="archives-time"><?= h(date('m-d', (int)$post['published_at'])) ?></span>
+                    <a href="<?= h(url_for('post', ['slug' => (string)$post['slug']])) ?>"><?= h((string)$post['title']) ?></a>
+                  </p>
                 <?php endforeach; ?>
-              </ul>
-            </div>
-          </section>
-        <?php endforeach; ?>
+              </div>
+            </li>
+          <?php endforeach; ?>
+        </ul>
       </div>
     <?php else: ?>
-      <div class="empty-state">
+      <div class="empty-notice">
         <p>归档还是空的。</p>
       </div>
     <?php endif; ?>
@@ -1408,7 +1463,7 @@ function render_archives(): void
     $content = (string)ob_get_clean();
 
     render_layout('归档', $content, [
-        'active' => 'archives',
+        'mode' => 'public',
         'description' => '已发布文章归档',
     ]);
 }
@@ -1419,52 +1474,51 @@ function render_post_page(array $post): void
     $state = post_state($post);
     $author = setting('author_name', 'Admin');
     $displayTime = (int)($post['published_at'] ?: $post['updated_at'] ?: $post['created_at']);
+    $tagsMarkup = render_tag_chips($post);
 
     ob_start();
     ?>
-    <article class="article-shell">
-      <header class="article-head">
+    <article>
+      <h1 class="post-title" itemprop="name headline"><?= h($post['title']) ?></h1>
+      <div class="meta">
+        <span><?= h(date('F j, Y', $displayTime)) ?></span>
+        <span>作者: <?= h($author) ?></span>
         <?php if (!is_live_post($post) && is_admin()): ?>
-          <span class="status-badge status-badge--<?= h($state['class']) ?>"><?= h($state['label']) ?>预览</span>
+          <span><?= h($state['label']) ?>预览</span>
         <?php endif; ?>
-        <h1 class="article-title"><?= h($post['title']) ?></h1>
-        <div class="article-meta">
-          <time datetime="<?= h(date(DATE_ATOM, $displayTime)) ?>"><?= h(pretty_date($displayTime)) ?></time>
-          <span>·</span>
-          <span><?= h($author) ?></span>
-        </div>
-      </header>
-
-      <section class="markdown-body">
+      </div>
+      <div class="post-content" itemprop="articleBody">
         <?= markdown_to_html((string)$post['content']) ?>
-      </section>
-      <?= render_tag_chips($post, 'article-tags') ?>
+      </div>
+      <?php if ($tagsMarkup !== ''): ?>
+        <div class="post-tags">
+          <nav class="nav tags">
+            <?= $tagsMarkup ?>
+          </nav>
+        </div>
+      <?php endif; ?>
     </article>
 
     <?php if ($neighbors['newer'] || $neighbors['older']): ?>
-      <nav class="post-nav" aria-label="Post Navigation">
-        <?php if ($neighbors['newer']): ?>
-          <a class="post-nav__item" href="<?= h(url_for('post', ['slug' => $neighbors['newer']['slug']])) ?>">
-            <span class="post-nav__label">较新</span>
-            <strong><?= h($neighbors['newer']['title']) ?></strong>
-          </a>
-        <?php else: ?>
-          <span class="post-nav__item post-nav__item--empty"></span>
-        <?php endif; ?>
-
-        <?php if ($neighbors['older']): ?>
-          <a class="post-nav__item post-nav__item--align-right" href="<?= h(url_for('post', ['slug' => $neighbors['older']['slug']])) ?>">
-            <span class="post-nav__label">更早</span>
-            <strong><?= h($neighbors['older']['title']) ?></strong>
-          </a>
-        <?php endif; ?>
-      </nav>
+      <ul class="pagination">
+        <li class="page-item page-previous">
+          <?php if ($neighbors['newer']): ?>
+            <a href="<?= h(url_for('post', ['slug' => (string)$neighbors['newer']['slug']])) ?>">上一篇</a>
+          <?php endif; ?>
+        </li>
+        <li class="page-item page-next">
+          <?php if ($neighbors['older']): ?>
+            <a href="<?= h(url_for('post', ['slug' => (string)$neighbors['older']['slug']])) ?>">下一篇</a>
+          <?php endif; ?>
+        </li>
+      </ul>
     <?php endif; ?>
     <?php
     $content = (string)ob_get_clean();
 
     render_layout((string)$post['title'], $content, [
         'active' => 'home',
+        'mode' => 'public',
         'description' => trim((string)$post['excerpt']) !== '' ? (string)$post['excerpt'] : derive_excerpt((string)$post['content']),
     ]);
 }
@@ -1475,29 +1529,26 @@ function render_page_view(array $page): void
 
     ob_start();
     ?>
-    <article class="article-shell">
-      <header class="article-head">
+    <article>
+      <h1 class="post-title" itemprop="name headline"><?= h($page['title']) ?></h1>
+      <div class="meta">
+        <span>独立页面</span>
+        <span>更新于 <?= h(date('F j, Y', $displayTime)) ?></span>
         <?php if (!is_live_content($page) && is_admin()): ?>
           <?php $state = post_state($page); ?>
-          <span class="status-badge status-badge--<?= h($state['class']) ?>"><?= h($state['label']) ?>预览</span>
+          <span><?= h($state['label']) ?>预览</span>
         <?php endif; ?>
-        <h1 class="article-title"><?= h($page['title']) ?></h1>
-        <div class="article-meta">
-          <span>独立页面</span>
-          <span>·</span>
-          <time datetime="<?= h(date(DATE_ATOM, $displayTime)) ?>">更新于 <?= h(pretty_date($displayTime)) ?></time>
-        </div>
-      </header>
-
-      <section class="markdown-body">
+      </div>
+      <div class="post-content" itemprop="articleBody">
         <?= markdown_to_html((string)$page['content']) ?>
-      </section>
+      </div>
     </article>
     <?php
     $content = (string)ob_get_clean();
 
     render_layout((string)$page['title'], $content, [
         'active' => 'page:' . (string)$page['slug'],
+        'mode' => 'public',
         'description' => trim((string)$page['excerpt']) !== '' ? (string)$page['excerpt'] : derive_excerpt((string)$page['content']),
     ]);
 }
@@ -1508,27 +1559,21 @@ function render_tags_index(): void
 
     ob_start();
     ?>
-    <section class="hero hero--compact">
-      <p class="hero__eyebrow">Tags</p>
-      <h1 class="hero__title">标签</h1>
-      <p class="hero__lead">按主题聚合已经发布的文章。</p>
-    </section>
+    <h1 class="post-title" itemprop="name headline">标签</h1>
 
     <?php if ($tags): ?>
-      <section class="panel panel--soft">
-        <div class="panel__body">
-          <div class="tag-cloud">
-            <?php foreach ($tags as $tag): ?>
-              <a class="tag-chip tag-chip--count" href="<?= h(url_for('tag', ['slug' => $tag['slug']])) ?>">
-                <span>#<?= h($tag['label']) ?></span>
-                <strong><?= h((string)$tag['count']) ?></strong>
-              </a>
-            <?php endforeach; ?>
-          </div>
+      <div class="post-content">
+        <div class="tag-cloud">
+          <?php foreach ($tags as $tag): ?>
+            <a class="tag-chip tag-chip--count" href="<?= h(url_for('tag', ['slug' => $tag['slug']])) ?>">
+              <span>#<?= h($tag['label']) ?></span>
+              <strong><?= h((string)$tag['count']) ?></strong>
+            </a>
+          <?php endforeach; ?>
         </div>
-      </section>
+      </div>
     <?php else: ?>
-      <div class="empty-state">
+      <div class="empty-notice">
         <p>还没有标签。</p>
       </div>
     <?php endif; ?>
@@ -1536,6 +1581,8 @@ function render_tags_index(): void
     $content = (string)ob_get_clean();
 
     render_layout('标签', $content, [
+        'active' => 'tags',
+        'mode' => 'public',
         'description' => '标签索引',
     ]);
 }
@@ -1549,37 +1596,22 @@ function render_tag_page(string $slug): void
         simple_error_page('标签不存在', '没有找到这个标签下的文章。', 404);
     }
 
-    $label = $label ?? ('#' . $slug);
+    $label = $label ?? $slug;
 
     ob_start();
     ?>
-    <section class="hero hero--compact">
-      <p class="hero__eyebrow">Tag</p>
-      <h1 class="hero__title">#<?= h($label) ?></h1>
-      <p class="hero__lead"><?= h((string)count($posts)) ?> 篇文章</p>
-    </section>
+    <h1 class="post-title" itemprop="name headline">#<?= h($label) ?></h1>
+    <div class="meta"><?= h((string)count($posts)) ?> 篇文章</div>
 
     <?php if ($posts): ?>
-      <div class="story-list">
-        <?php foreach ($posts as $index => $post): ?>
-          <article class="story-card" style="--enter-delay: <?= (int)($index * 90) ?>ms">
-            <div class="story-card__meta">
-              <time datetime="<?= h(date(DATE_ATOM, (int)$post['published_at'])) ?>"><?= h(pretty_date((int)$post['published_at'])) ?></time>
-              <span class="story-card__divider"></span>
-              <span>文章</span>
-            </div>
-            <h2 class="story-card__title">
-              <a href="<?= h(url_for('post', ['slug' => $post['slug']])) ?>"><?= h($post['title']) ?></a>
-            </h2>
-            <?php if (trim((string)$post['excerpt']) !== ''): ?>
-              <p class="story-card__excerpt"><?= h((string)$post['excerpt']) ?></p>
-            <?php endif; ?>
-            <?= render_tag_chips($post, 'story-card__tags') ?>
-          </article>
-        <?php endforeach; ?>
-      </div>
+      <article>
+        <div class="recent-posts section">
+          <h2 class="section-header">文章</h2>
+          <?= render_public_post_list($posts) ?>
+        </div>
+      </article>
     <?php else: ?>
-      <div class="empty-state">
+      <div class="empty-notice">
         <p>这个标签下还没有文章。</p>
       </div>
     <?php endif; ?>
@@ -1587,6 +1619,8 @@ function render_tag_page(string $slug): void
     $content = (string)ob_get_clean();
 
     render_layout('#' . $label, $content, [
+        'active' => 'tags',
+        'mode' => 'public',
         'description' => '标签 ' . $label . ' 下的文章',
     ]);
 }
@@ -1734,6 +1768,16 @@ function render_admin_page(): void
             </div>
             <div class="field-grid">
               <div class="field">
+                <label for="logo_url">头像地址</label>
+                <input id="logo_url" name="logo_url" type="url" value="<?= h(setting('logo_url', default_settings()['logo_url'])) ?>" placeholder="https://example.com/avatar.jpg">
+              </div>
+              <div class="field">
+                <label for="footer_beian">备案号</label>
+                <input id="footer_beian" name="footer_beian" type="text" value="<?= h(setting('footer_beian')) ?>" placeholder="京 ICP 备 12345678 号">
+              </div>
+            </div>
+            <div class="field-grid">
+              <div class="field">
                 <label for="posts_per_page">首页每页文章数</label>
                 <input id="posts_per_page" name="posts_per_page" type="number" min="1" max="24" value="<?= h(setting('posts_per_page', '6')) ?>">
               </div>
@@ -1755,7 +1799,7 @@ function render_admin_page(): void
               <textarea id="site_description" name="site_description" rows="3"><?= h(setting('site_description')) ?></textarea>
             </div>
             <div class="field">
-              <label for="home_intro">首页引言</label>
+              <label for="home_intro">头部一句话</label>
               <textarea id="home_intro" name="home_intro" rows="4"><?= h(setting('home_intro')) ?></textarea>
             </div>
             <div class="field">
@@ -2050,6 +2094,8 @@ switch ($action) {
             'site_name' => $siteName !== '' ? $siteName : default_settings()['site_name'],
             'author_name' => $authorName !== '' ? $authorName : default_settings()['author_name'],
             'site_url' => trim((string)($_POST['site_url'] ?? '')),
+            'logo_url' => trim((string)($_POST['logo_url'] ?? default_settings()['logo_url'])),
+            'footer_beian' => trim((string)($_POST['footer_beian'] ?? '')),
             'posts_per_page' => (string)$postsPerPage,
             'pretty_url' => $prettyUrl,
             'site_tagline' => trim((string)($_POST['site_tagline'] ?? '')),

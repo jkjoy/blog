@@ -41,7 +41,8 @@
 ```text
 index.php      主入口
 install.php    安装页
-app.css        前后台样式
+index.css      前后台样式
+index.js       前台交互
 .htaccess      Apache 重写和目录保护
 data/          SQLite、安装锁、配置
 cache/         设置缓存
