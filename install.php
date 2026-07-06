@@ -17,7 +17,7 @@ function i_h(string|int|float|bool|null $value): string
 function i_default_settings(): array
 {
     return [
-        'site_name' => 'Paper Notes',
+        'site_name' => 'Simple PHP Blog',
         'author_name' => 'Admin',
         'site_url' => '',
         'site_tagline' => 'A small PHP blog running on one main entry file.',
@@ -196,7 +196,7 @@ function i_render_page(string $title, string $body): void
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title><?= i_h($title) ?></title>
-  <link rel="stylesheet" href="<?= i_h(i_asset_url('index.css')) ?>?v=v0.1.0">
+  <link rel="stylesheet" href="<?= i_h(i_asset_url('index.css')) ?>?v=v0.1.6">
 </head>
 <body>
   <div class="site-frame">
@@ -370,12 +370,12 @@ if (is_file(INSTALL_LOCK_FILE)) {
 }
 
 $form = [
-    'site_name' => 'Paper Notes',
+    'site_name' => 'Simple PHP Blog',
     'site_tagline' => 'A small PHP blog running on one main entry file.',
     'admin_username' => 'admin',
     'author_name' => 'Admin',
     'welcome_title' => '欢迎来到你的新博客',
-    'welcome_body' => i_sample_body('Paper Notes'),
+    'welcome_body' => i_sample_body('Simple PHP Blog'),
     'pretty_url' => '0',
 ];
 
@@ -384,7 +384,7 @@ if ($_SERVER['REQUEST_METHOD'] !== 'POST') {
 }
 
 $form = [
-    'site_name' => trim((string)($_POST['site_name'] ?? 'Paper Notes')),
+    'site_name' => trim((string)($_POST['site_name'] ?? 'Simple PHP Blog')),
     'site_tagline' => trim((string)($_POST['site_tagline'] ?? '')),
     'admin_username' => trim((string)($_POST['admin_username'] ?? 'admin')),
     'author_name' => trim((string)($_POST['author_name'] ?? 'Admin')),
@@ -447,19 +447,34 @@ $db->exec(
 $db->exec(
     'CREATE TABLE IF NOT EXISTS posts(
         id INTEGER PRIMARY KEY AUTOINCREMENT,
+        category_id INTEGER,
         slug TEXT NOT NULL UNIQUE,
         title TEXT NOT NULL,
         excerpt TEXT NOT NULL DEFAULT \'\',
         content TEXT NOT NULL,
         kind TEXT NOT NULL DEFAULT \'post\',
         tags TEXT NOT NULL DEFAULT \'[]\',
+        views INTEGER NOT NULL DEFAULT 0,
         status TEXT NOT NULL DEFAULT \'draft\',
         published_at INTEGER NOT NULL DEFAULT 0,
         created_at INTEGER NOT NULL,
         updated_at INTEGER NOT NULL
     )'
 );
+$db->exec(
+    'CREATE TABLE IF NOT EXISTS categories(
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        name TEXT NOT NULL,
+        slug TEXT NOT NULL UNIQUE,
+        description TEXT NOT NULL DEFAULT \'\',
+        sort_order INTEGER NOT NULL DEFAULT 0,
+        created_at INTEGER NOT NULL,
+        updated_at INTEGER NOT NULL
+    )'
+);
 $db->exec('CREATE INDEX IF NOT EXISTS idx_posts_published ON posts(kind, status, published_at DESC, id DESC)');
+$db->exec('CREATE INDEX IF NOT EXISTS idx_posts_category ON posts(category_id, kind, status, published_at DESC)');
+$db->exec('CREATE INDEX IF NOT EXISTS idx_categories_sort ON categories(sort_order ASC, id DESC)');
 
 $now = time();
 $settings = i_default_settings();
@@ -478,11 +493,16 @@ foreach ($settings as $name => $value) {
 $db->prepare('INSERT INTO users(username, password_hash, created_at) VALUES(?, ?, ?)')
     ->execute([$form['admin_username'], password_hash($password, PASSWORD_DEFAULT), $now]);
 
+$db->prepare('INSERT INTO categories(name, slug, description, sort_order, created_at, updated_at) VALUES(?, ?, ?, ?, ?, ?)')
+    ->execute(['默认分类', 'default', '安装时自动创建的默认文章分类。', 0, $now, $now]);
+$defaultCategoryId = (int)$db->lastInsertId();
+
 $db->prepare(
-    'INSERT INTO posts(kind, slug, title, tags, excerpt, content, status, published_at, created_at, updated_at)
-     VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?)'
+    'INSERT INTO posts(kind, category_id, slug, title, tags, excerpt, content, status, published_at, created_at, updated_at)
+     VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)'
 )->execute([
     'post',
+    $defaultCategoryId,
     i_slugify($form['welcome_title']),
     $form['welcome_title'],
     json_encode(['欢迎'], JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES),
@@ -495,10 +515,11 @@ $db->prepare(
 ]);
 
 $db->prepare(
-    'INSERT INTO posts(kind, slug, title, tags, excerpt, content, status, published_at, created_at, updated_at)
-     VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?)'
+    'INSERT INTO posts(kind, category_id, slug, title, tags, excerpt, content, status, published_at, created_at, updated_at)
+     VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)'
 )->execute([
     'page',
+    null,
     'about',
     '关于',
     '[]',

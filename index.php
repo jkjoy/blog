@@ -4,9 +4,10 @@ declare(strict_types=1);
 
 session_start();
 
-const APP_VERSION = 'v0.1.0';
+const APP_VERSION = 'v0.1.6';
 const DATA_DIR = __DIR__ . '/data';
 const CACHE_DIR = __DIR__ . '/cache';
+const UPLOAD_DIR = __DIR__ . '/uploads';
 const DB_CONFIG_FILE = DATA_DIR . '/config.php';
 const DEFAULT_DB_FILE = DATA_DIR . '/blog.sqlite';
 const INSTALL_LOCK_FILE = DATA_DIR . '/install.lock';
@@ -35,6 +36,10 @@ function ensure_runtime_dirs(): void
 
     if (!is_dir(CACHE_DIR)) {
         mkdir(CACHE_DIR, 0755, true);
+    }
+
+    if (!is_dir(UPLOAD_DIR)) {
+        mkdir(UPLOAD_DIR, 0755, true);
     }
 }
 
@@ -125,20 +130,37 @@ function ensure_schema(PDO $pdo): void
     $pdo->exec(
         "CREATE TABLE IF NOT EXISTS posts(
             id INTEGER PRIMARY KEY AUTOINCREMENT,
+            category_id INTEGER,
             slug TEXT NOT NULL UNIQUE,
             title TEXT NOT NULL,
             excerpt TEXT NOT NULL DEFAULT '',
             content TEXT NOT NULL,
             kind TEXT NOT NULL DEFAULT 'post',
             tags TEXT NOT NULL DEFAULT '[]',
+            views INTEGER NOT NULL DEFAULT 0,
             status TEXT NOT NULL DEFAULT 'draft',
             published_at INTEGER NOT NULL DEFAULT 0,
             created_at INTEGER NOT NULL,
             updated_at INTEGER NOT NULL
         )"
     );
+    $pdo->exec(
+        "CREATE TABLE IF NOT EXISTS categories(
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            name TEXT NOT NULL,
+            slug TEXT NOT NULL UNIQUE,
+            description TEXT NOT NULL DEFAULT '',
+            sort_order INTEGER NOT NULL DEFAULT 0,
+            created_at INTEGER NOT NULL,
+            updated_at INTEGER NOT NULL
+        )"
+    );
 
     $columns = table_columns($pdo, 'posts');
+
+    if (!isset($columns['category_id'])) {
+        $pdo->exec("ALTER TABLE posts ADD COLUMN category_id INTEGER");
+    }
 
     if (!isset($columns['kind'])) {
         $pdo->exec("ALTER TABLE posts ADD COLUMN kind TEXT NOT NULL DEFAULT 'post'");
@@ -148,10 +170,17 @@ function ensure_schema(PDO $pdo): void
         $pdo->exec("ALTER TABLE posts ADD COLUMN tags TEXT NOT NULL DEFAULT '[]'");
     }
 
+    if (!isset($columns['views'])) {
+        $pdo->exec("ALTER TABLE posts ADD COLUMN views INTEGER NOT NULL DEFAULT 0");
+    }
+
     $pdo->exec("UPDATE posts SET kind = 'post' WHERE kind IS NULL OR trim(kind) = ''");
     $pdo->exec("UPDATE posts SET tags = '[]' WHERE tags IS NULL OR trim(tags) = ''");
+    $pdo->exec("UPDATE posts SET views = 0 WHERE views IS NULL");
     $pdo->exec('CREATE INDEX IF NOT EXISTS idx_posts_public ON posts(kind, status, published_at DESC, id DESC)');
     $pdo->exec('CREATE INDEX IF NOT EXISTS idx_posts_kind_updated ON posts(kind, updated_at DESC, id DESC)');
+    $pdo->exec('CREATE INDEX IF NOT EXISTS idx_posts_category ON posts(category_id, kind, status, published_at DESC)');
+    $pdo->exec('CREATE INDEX IF NOT EXISTS idx_categories_sort ON categories(sort_order ASC, id DESC)');
 }
 
 function db(): PDO
@@ -213,7 +242,7 @@ function val(string $sql, array $params = []): mixed
 function default_settings(): array
 {
     return [
-        'site_name' => 'Paper Notes',
+        'site_name' => 'Simple PHP Blog',
         'author_name' => 'Admin',
         'site_url' => '',
         'site_tagline' => 'A small PHP blog running on one main entry file.',
@@ -296,6 +325,131 @@ function verify_csrf(): void
     if ($sessionToken === '' || !hash_equals($sessionToken, $token)) {
         simple_error_page('请求已失效', '请刷新页面后重试。', 422);
     }
+}
+
+function json_response(array $payload, int $status = 200): void
+{
+    http_response_code($status);
+    header('Content-Type: application/json; charset=UTF-8');
+    echo json_encode($payload, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES);
+    exit;
+}
+
+function ensure_upload_year_dir(): array
+{
+    ensure_runtime_dirs();
+
+    $year = date('Y');
+    $dir = UPLOAD_DIR . '/' . $year;
+    if (!is_dir($dir)) {
+        mkdir($dir, 0755, true);
+    }
+
+    $htaccess = UPLOAD_DIR . '/.htaccess';
+    if (!is_file($htaccess)) {
+        file_put_contents(
+            $htaccess,
+            "Options -ExecCGI\nRemoveHandler .php .phtml .php3 .php4 .php5 .php7 .php8 .phar .cgi .pl .py .rb .asp .aspx .jsp\n<FilesMatch \"\\.(php|phtml|php3|php4|php5|php7|php8|phar|cgi|pl|py|rb|asp|aspx|jsp)$\">\n  Require all denied\n</FilesMatch>\n",
+            LOCK_EX
+        );
+    }
+
+    return [$year, $dir];
+}
+
+function upload_error_message(int $code): string
+{
+    return match ($code) {
+        UPLOAD_ERR_INI_SIZE, UPLOAD_ERR_FORM_SIZE => '文件超过服务器允许的大小。',
+        UPLOAD_ERR_PARTIAL => '文件只上传了一部分。',
+        UPLOAD_ERR_NO_FILE => '没有选择文件。',
+        UPLOAD_ERR_NO_TMP_DIR => '服务器缺少临时目录。',
+        UPLOAD_ERR_CANT_WRITE => '服务器无法写入文件。',
+        UPLOAD_ERR_EXTENSION => '上传被服务器扩展拦截。',
+        default => '上传失败。',
+    };
+}
+
+function handle_attachment_upload(): void
+{
+    require_admin();
+    verify_csrf();
+
+    $files = $_FILES['attachments'] ?? null;
+    if (!is_array($files) || !isset($files['name'], $files['tmp_name'], $files['error'], $files['size'])) {
+        json_response(['ok' => false, 'error' => '没有收到附件。'], 400);
+    }
+
+    [$year, $dir] = ensure_upload_year_dir();
+    $maxSize = 30 * 1024 * 1024;
+    $blockedExtensions = ['php', 'phtml', 'php3', 'php4', 'php5', 'php7', 'php8', 'phar', 'cgi', 'pl', 'py', 'rb', 'asp', 'aspx', 'jsp', 'html', 'htm', 'js', 'mjs', 'sh', 'bat', 'cmd', 'exe', 'dll'];
+    $names = is_array($files['name']) ? $files['name'] : [$files['name']];
+    $tmpNames = is_array($files['tmp_name']) ? $files['tmp_name'] : [$files['tmp_name']];
+    $errors = is_array($files['error']) ? $files['error'] : [$files['error']];
+    $sizes = is_array($files['size']) ? $files['size'] : [$files['size']];
+    $uploaded = [];
+    $failed = [];
+
+    foreach ($names as $i => $originalName) {
+        $originalName = (string)$originalName;
+        $error = (int)($errors[$i] ?? UPLOAD_ERR_NO_FILE);
+        $tmpName = (string)($tmpNames[$i] ?? '');
+        $size = (int)($sizes[$i] ?? 0);
+
+        if ($error !== UPLOAD_ERR_OK) {
+            $failed[] = ['name' => $originalName, 'error' => upload_error_message($error)];
+            continue;
+        }
+
+        if ($size < 1 || $size > $maxSize) {
+            $failed[] = ['name' => $originalName, 'error' => '每个附件最大 30M。'];
+            continue;
+        }
+
+        if (!is_uploaded_file($tmpName)) {
+            $failed[] = ['name' => $originalName, 'error' => '临时文件无效。'];
+            continue;
+        }
+
+        $extension = strtolower(pathinfo($originalName, PATHINFO_EXTENSION));
+        if ($extension === '') {
+            $extension = 'bin';
+        }
+
+        if (in_array($extension, $blockedExtensions, true)) {
+            $failed[] = ['name' => $originalName, 'error' => '不允许上传脚本或可执行文件。'];
+            continue;
+        }
+
+        $safeExtension = preg_replace('/[^a-z0-9]+/i', '', $extension) ?: 'bin';
+        $timestamp = str_replace('.', '', sprintf('%.6F', microtime(true)));
+        $filename = $timestamp . '-' . bin2hex(random_bytes(3)) . '.' . $safeExtension;
+        $target = $dir . '/' . $filename;
+
+        if (!move_uploaded_file($tmpName, $target)) {
+            $failed[] = ['name' => $originalName, 'error' => '保存附件失败。'];
+            continue;
+        }
+
+        $isImage = @getimagesize($target) !== false;
+        $url = asset_url('uploads/' . $year . '/' . $filename);
+        $label = trim(pathinfo($originalName, PATHINFO_FILENAME)) ?: $filename;
+        $markdown = $isImage ? '![' . $label . '](' . $url . ')' : '[' . $label . '](' . $url . ')';
+
+        $uploaded[] = [
+            'name' => $originalName,
+            'url' => $url,
+            'markdown' => $markdown,
+            'is_image' => $isImage,
+            'size' => $size,
+        ];
+    }
+
+    json_response([
+        'ok' => $uploaded !== [],
+        'files' => $uploaded,
+        'errors' => $failed,
+    ], $uploaded !== [] ? 200 : 400);
 }
 
 function current_admin(): ?array
@@ -403,6 +557,11 @@ function apply_pretty_route(): void
         return;
     }
 
+    if (preg_match('#^/admin/(posts|categories|settings)/?$#i', $path, $matches)) {
+        set_route_params(['a' => 'admin_' . str_lower_u($matches[1])]);
+        return;
+    }
+
     if (preg_match('#^/(login|logout|admin|write)/?$#i', $path, $matches)) {
         set_route_params(['a' => str_lower_u($matches[1])]);
         return;
@@ -415,6 +574,11 @@ function apply_pretty_route(): void
 
     if (preg_match('#^/post/(.+)$#u', $path, $matches)) {
         set_route_params(['a' => 'post', 'slug' => trim($matches[1], '/')]);
+        return;
+    }
+
+    if (preg_match('#^/([^/]+)/?$#u', $path, $matches)) {
+        set_route_params(['a' => 'page', 'slug' => trim($matches[1], '/')]);
         return;
     }
 
@@ -465,18 +629,29 @@ function url_for(string $route, array $params = []): string
         'archives' => $pretty ? app_path('/archives') : script_url() . '?a=archives',
         'tags' => $pretty ? app_path('/tags') : script_url() . '?a=tags',
         'tag' => $pretty ? app_path('/tag/' . rawurlencode((string)($params['slug'] ?? ''))) : script_url() . '?a=tag&slug=' . rawurlencode((string)($params['slug'] ?? '')),
-        'page' => $pretty ? app_path('/pages/' . rawurlencode((string)($params['slug'] ?? ''))) : script_url() . '?a=page&slug=' . rawurlencode((string)($params['slug'] ?? '')),
+        'page' => $pretty ? app_path('/' . rawurlencode((string)($params['slug'] ?? ''))) : script_url() . '?a=page&slug=' . rawurlencode((string)($params['slug'] ?? '')),
         'login' => $pretty ? app_path('/login') : script_url() . '?a=login',
         'logout' => $pretty ? app_path('/logout') : script_url() . '?a=logout',
         'admin' => $pretty ? app_path('/admin') : script_url() . '?a=admin',
+        'admin_posts' => $pretty ? app_path('/admin/posts') : script_url() . '?a=admin_posts',
+        'admin_categories' => $pretty ? app_path('/admin/categories') : script_url() . '?a=admin_categories',
+        'admin_settings' => $pretty ? app_path('/admin/settings') : script_url() . '?a=admin_settings',
         'write' => $pretty ? app_path('/write') : script_url() . '?a=write',
         'edit' => $pretty ? app_path('/edit/' . (int)($params['id'] ?? 0)) : script_url() . '?a=edit&id=' . (int)($params['id'] ?? 0),
         'post' => $pretty ? app_path('/post/' . rawurlencode((string)($params['slug'] ?? ''))) : script_url() . '?a=post&slug=' . rawurlencode((string)($params['slug'] ?? '')),
         'save_settings' => script_url() . '?a=save_settings',
+        'save_category' => script_url() . '?a=save_category',
+        'delete_category' => script_url() . '?a=delete_category',
+        'upload_attachment' => script_url() . '?a=upload_attachment',
         'delete_post' => script_url() . '?a=delete_post',
         'change_status' => script_url() . '?a=change_status',
         default => script_url(),
     };
+}
+
+function url_with_query(string $url, array $params): string
+{
+    return $url . (str_contains($url, '?') ? '&' : '?') . http_build_query($params);
 }
 
 function home_page_url(int $page): string
@@ -693,7 +868,25 @@ function derive_excerpt(string $content, int $length = 140): string
 
 function safe_link_url(string $url): string
 {
-    return filter_var($url, FILTER_VALIDATE_URL) ? $url : '#';
+    $url = trim($url);
+
+    if ($url === '') {
+        return '#';
+    }
+
+    if (preg_match('/[\x00-\x1F\x7F]/', $url)) {
+        return '#';
+    }
+
+    if (preg_match('#^https?://#i', $url) && filter_var($url, FILTER_VALIDATE_URL)) {
+        return $url;
+    }
+
+    if (str_starts_with($url, '/') || str_starts_with($url, '#')) {
+        return $url;
+    }
+
+    return '#';
 }
 
 function render_inline(string $text): string
@@ -718,9 +911,29 @@ function render_inline(string $text): string
         $escaped = h($part);
 
         $escaped = preg_replace_callback(
-            '/\[(.+?)]\((https?:\/\/[^\s)]+)\)/u',
+            '/!\[(.*?)]\(([^\s)]+)\)/u',
             static function (array $matches): string {
-                return '<a href="' . h(safe_link_url($matches[2])) . '" target="_blank" rel="noopener noreferrer">' . $matches[1] . '</a>';
+                $src = safe_link_url($matches[2]);
+                if ($src === '#') {
+                    return $matches[0];
+                }
+
+                return '<img src="' . h($src) . '" alt="' . $matches[1] . '" loading="lazy">';
+            },
+            $escaped
+        ) ?? $escaped;
+
+        $escaped = preg_replace_callback(
+            '/(?<!!)\[(.+?)]\(([^\s)]+)\)/u',
+            static function (array $matches): string {
+                $href = safe_link_url($matches[2]);
+                if ($href === '#') {
+                    return $matches[0];
+                }
+
+                $external = preg_match('#^https?://#i', $href) === 1;
+                $attrs = $external ? ' target="_blank" rel="noopener noreferrer"' : '';
+                return '<a href="' . h($href) . '"' . $attrs . '>' . $matches[1] . '</a>';
             },
             $escaped
         ) ?? $escaped;
@@ -964,6 +1177,82 @@ function fetch_post_by_id(int $id): ?array
     return $id > 0 ? one('SELECT * FROM posts WHERE id = ?', [$id]) : null;
 }
 
+function increment_content_views(array $post): void
+{
+    if (is_admin() || !is_live_content($post)) {
+        return;
+    }
+
+    q('UPDATE posts SET views = views + 1 WHERE id = ?', [(int)$post['id']]);
+}
+
+function fetch_categories(): array
+{
+    return all_rows(
+        'SELECT c.*, COUNT(p.id) AS post_count
+         FROM categories c
+         LEFT JOIN posts p ON p.category_id = c.id AND p.kind = ?
+         GROUP BY c.id
+         ORDER BY c.sort_order ASC, c.id DESC',
+        ['post']
+    );
+}
+
+function category_options(): array
+{
+    return all_rows('SELECT id, name FROM categories ORDER BY sort_order ASC, id DESC');
+}
+
+function category_name(?int $id): string
+{
+    if (!$id) {
+        return '未分类';
+    }
+
+    return (string)(val('SELECT name FROM categories WHERE id = ?', [$id]) ?: '未分类');
+}
+
+function unique_category_slug(string $seed, ?int $excludeId = null): string
+{
+    $base = slugify($seed);
+    $slug = $base;
+    $i = 2;
+
+    while (true) {
+        $existing = $excludeId
+            ? one('SELECT id FROM categories WHERE slug = ? AND id <> ?', [$slug, $excludeId])
+            : one('SELECT id FROM categories WHERE slug = ?', [$slug]);
+
+        if (!$existing) {
+            return $slug;
+        }
+
+        $slug = $base . '-' . $i++;
+    }
+}
+
+function validate_category_input(array $input, ?array $existing = null): array
+{
+    $name = trim((string)($input['name'] ?? ''));
+    $slugInput = trim((string)($input['slug'] ?? ''));
+    $description = trim((string)($input['description'] ?? ''));
+    $sortOrder = (int)($input['sort_order'] ?? 0);
+    $errors = [];
+
+    if ($name === '') {
+        $errors[] = '分类名称不能为空。';
+    }
+
+    $slug = unique_category_slug($slugInput !== '' ? $slugInput : $name, $existing ? (int)$existing['id'] : null);
+
+    return [[
+        'name' => $name,
+        'slug' => $slug,
+        'description' => $description,
+        'sort_order' => $sortOrder,
+    ], $errors];
+}
+
 function fetch_archive_posts(): array
 {
     return all_rows('SELECT id, slug, title, published_at, tags, kind FROM posts WHERE kind = ? AND status = ? AND published_at <= ? ORDER BY published_at DESC, id DESC', ['post', 'published', time()]);
@@ -998,7 +1287,7 @@ function public_quote(): string
         $quote = trim(setting('site_tagline'));
     }
 
-    return $quote !== '' ? $quote : setting('site_name', 'Paper Notes');
+    return $quote !== '' ? $quote : setting('site_name', default_settings()['site_name']);
 }
 
 function public_icon(string $name): string
@@ -1031,22 +1320,32 @@ function render_public_post_list(array $posts): string
 function fetch_admin_posts(): array
 {
     return all_rows(
-        "SELECT * FROM posts ORDER BY
-            CASE WHEN status = 'published' THEN published_at ELSE updated_at END DESC,
-            id DESC"
+        "SELECT p.*, c.name AS category_name
+         FROM posts p
+         LEFT JOIN categories c ON c.id = p.category_id
+         ORDER BY
+            CASE WHEN p.status = 'published' THEN p.published_at ELSE p.updated_at END DESC,
+            p.id DESC"
     );
 }
 
 function admin_metrics(): array
 {
     $now = time();
+    $totalPosts = (int)val('SELECT COUNT(*) FROM posts WHERE kind = ? AND status = ? AND published_at <= ?', ['post', 'published', $now]);
+    $publishedPosts = (int)val('SELECT COUNT(*) FROM posts WHERE kind = ? AND status = ? AND published_at <= ?', ['post', 'published', $now]);
+    $totalViews = (int)val('SELECT COALESCE(SUM(views), 0) FROM posts WHERE status = ? AND published_at <= ?', ['published', $now]);
 
     return [
-        'total' => (int)val('SELECT COUNT(*) FROM posts'),
-        'published' => (int)val('SELECT COUNT(*) FROM posts WHERE kind = ? AND status = ? AND published_at <= ?', ['post', 'published', $now]),
+        'total_posts' => $totalPosts,
+        'published' => $publishedPosts,
         'pages' => (int)val('SELECT COUNT(*) FROM posts WHERE kind = ? AND status = ? AND published_at <= ?', ['page', 'published', $now]),
         'drafts' => (int)val("SELECT COUNT(*) FROM posts WHERE status = 'draft'"),
         'scheduled' => (int)val('SELECT COUNT(*) FROM posts WHERE status = ? AND published_at > ?', ['published', $now]),
+        'categories' => (int)val('SELECT COUNT(*) FROM categories'),
+        'total_views' => $totalViews,
+        'avg_views' => $totalPosts > 0 ? (int)floor($totalViews / $totalPosts) : 0,
+        'top_viewed' => all_rows('SELECT id, slug, title, views FROM posts WHERE kind = ? AND status = ? AND published_at <= ? ORDER BY views DESC, updated_at DESC LIMIT 5', ['post', 'published', $now]),
     ];
 }
 
@@ -1159,6 +1458,7 @@ function validate_post_input(array $input, ?array $existing = null): array
     $content = trim((string)($input['content'] ?? ''));
     $excerpt = trim((string)($input['excerpt'] ?? ''));
     $kind = (string)($input['kind'] ?? 'post');
+    $categoryId = (int)($input['category_id'] ?? 0);
     $tagsInput = trim((string)($input['tags_input'] ?? ''));
     $status = (string)($input['status'] ?? 'draft');
     $publishedInput = trim((string)($input['published_at'] ?? ''));
@@ -1173,6 +1473,7 @@ function validate_post_input(array $input, ?array $existing = null): array
     }
 
     $kind = $kind === 'page' ? 'page' : 'post';
+    $categoryId = $kind === 'post' && $categoryId > 0 && one('SELECT id FROM categories WHERE id = ?', [$categoryId]) ? $categoryId : null;
     $status = $status === 'published' ? 'published' : 'draft';
     $publishedAt = (int)($existing['published_at'] ?? 0);
 
@@ -1200,6 +1501,7 @@ function validate_post_input(array $input, ?array $existing = null): array
         'excerpt' => $excerpt,
         'content' => $content,
         'kind' => $kind,
+        'category_id' => $categoryId,
         'tags' => $tags,
         'status' => $status,
         'published_at' => $publishedAt,
@@ -1208,7 +1510,7 @@ function validate_post_input(array $input, ?array $existing = null): array
 
 function render_layout(string $title, string $content, array $options = []): void
 {
-    $siteName = setting('site_name', 'Paper Notes');
+    $siteName = setting('site_name', default_settings()['site_name']);
     $fullTitle = $title === $siteName ? $siteName : $title . ' · ' . $siteName;
     $description = (string)($options['description'] ?? setting('site_description', setting('site_tagline')));
     $active = (string)($options['active'] ?? '');
@@ -1252,11 +1554,6 @@ function render_layout(string $title, string $content, array $options = []): voi
             <nav class="nav social" aria-label="Quick links">
               <ul class="flat">
                 <li>
-                  <a class="social-link<?= $active === 'tags' ? ' is-active' : '' ?>" href="<?= h(url_for('tags')) ?>" title="标签" aria-label="标签">
-                    <?= public_icon('tag') ?>
-                  </a>
-                </li>
-                <li>
                   <a class="social-link<?= $active === 'rss' ? ' is-active' : '' ?>" href="<?= h(url_for('rss')) ?>" title="RSS" aria-label="RSS">
                     <?= public_icon('rss') ?>
                   </a>
@@ -1267,6 +1564,8 @@ function render_layout(string $title, string $content, array $options = []): voi
           <nav class="nav" aria-label="Primary">
             <ul class="flat">
               <li class="<?= $active === 'home' ? 'active' : '' ?>"><a href="<?= h(url_for('home')) ?>">首页</a></li>
+              <li class="<?= $active === 'tags' ? 'active' : '' ?>"><a href="<?= h(url_for('tags')) ?>">标签</a></li>
+              <li class="<?= $active === 'archives' ? 'active' : '' ?>"><a href="<?= h(url_for('archives')) ?>">归档</a></li>
               <?php foreach ($navPages as $page): ?>
                 <li class="<?= $active === 'page:' . $page['slug'] ? 'active' : '' ?>">
                   <a href="<?= h(content_permalink($page)) ?>"><?= h($page['title']) ?></a>
@@ -1303,14 +1602,13 @@ function render_layout(string $title, string $content, array $options = []): voi
             <img class="site-brand__logo" src="<?= h(theme_logo_url()) ?>" width="44" height="44" alt="<?= h($siteName) ?>">
             <span class="site-brand__copy">
               <strong class="site-brand__title"><?= h($siteName) ?></strong>
-              <span class="site-brand__meta"><?= $admin ? 'Content Admin' : 'Admin Entry' ?></span>
+              <span class="site-brand__meta"><?= $admin ? 'Blog Admin' : 'Admin Entry' ?></span>
             </span>
           </a>
           <nav class="site-nav site-nav--admin" aria-label="Primary">
             <?php if ($admin): ?>
-              <a class="nav-link<?= $active === 'admin' ? ' is-active' : '' ?>" href="<?= h(url_for('admin')) ?>">内容管理</a>
-              <a class="nav-link nav-link--pill<?= in_array($active, ['write', 'edit'], true) ? ' is-active' : '' ?>" href="<?= h(url_for('write')) ?>">新内容</a>
-              <a class="nav-link" href="<?= h(url_for('home')) ?>">查看站点</a>
+              <a class="nav-link<?= $active === 'admin' ? ' is-active' : '' ?>" href="<?= h(url_for('admin')) ?>">管理后台</a>
+              <a class="nav-link nav-link--pill<?= in_array($active, ['write', 'edit'], true) ? ' is-active' : '' ?>" href="<?= h(url_for('write')) ?>">撰写文章</a>
               <a class="nav-link" href="<?= h(url_for('logout')) ?>">退出</a>
             <?php else: ?>
               <a class="nav-link" href="<?= h(url_for('home')) ?>">返回首页</a>
@@ -1342,43 +1640,81 @@ function render_layout(string $title, string $content, array $options = []): voi
     exit;
 }
 
+function admin_icon(string $name): string
+{
+    $attrs = 'class="admin-side__icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"';
+
+    $paths = match ($name) {
+        'overview' => '<rect x="3" y="3" width="7" height="9" rx="1"></rect><rect x="14" y="3" width="7" height="5" rx="1"></rect><rect x="14" y="12" width="7" height="9" rx="1"></rect><rect x="3" y="16" width="7" height="5" rx="1"></rect>',
+        'home' => '<path d="M3 10.5 12 3l9 7.5"></path><path d="M5 10v10h14V10"></path><path d="M9 20v-6h6v6"></path>',
+        'write' => '<path d="M12 20h9"></path><path d="M16.5 3.5a2.1 2.1 0 0 1 3 3L7 19l-4 1 1-4 12.5-12.5z"></path>',
+        'posts' => '<path d="M8 6h13"></path><path d="M8 12h13"></path><path d="M8 18h13"></path><path d="M3 6h.01"></path><path d="M3 12h.01"></path><path d="M3 18h.01"></path>',
+        'categories' => '<path d="M3 6h7l2 2h9v10a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V6z"></path>',
+        'settings' => '<path d="M12 15.5A3.5 3.5 0 1 0 12 8a3.5 3.5 0 0 0 0 7.5z"></path><path d="M19.4 15a1.7 1.7 0 0 0 .3 1.9l.1.1a2 2 0 1 1-2.8 2.8l-.1-.1a1.7 1.7 0 0 0-1.9-.3 1.7 1.7 0 0 0-1 1.5V21a2 2 0 1 1-4 0v-.1a1.7 1.7 0 0 0-1-1.5 1.7 1.7 0 0 0-1.9.3l-.1.1A2 2 0 1 1 4.2 17l.1-.1a1.7 1.7 0 0 0 .3-1.9 1.7 1.7 0 0 0-1.5-1H3a2 2 0 1 1 0-4h.1a1.7 1.7 0 0 0 1.5-1 1.7 1.7 0 0 0-.3-1.9L4.2 7A2 2 0 1 1 7 4.2l.1.1a1.7 1.7 0 0 0 1.9.3h.1a1.7 1.7 0 0 0 1-1.5V3a2 2 0 1 1 4 0v.1a1.7 1.7 0 0 0 1 1.5h.1a1.7 1.7 0 0 0 1.9-.3l.1-.1A2 2 0 1 1 19.8 7l-.1.1a1.7 1.7 0 0 0-.3 1.9v.1a1.7 1.7 0 0 0 1.5 1h.1a2 2 0 1 1 0 4h-.1a1.7 1.7 0 0 0-1.5 1z"></path>',
+        default => '<circle cx="12" cy="12" r="8"></circle>',
+    };
+
+    return '<svg ' . $attrs . '>' . $paths . '</svg>';
+}
+
 function render_admin_sidebar(string $active, array $summary = []): string
 {
+    $siteName = setting('site_name', default_settings()['site_name']);
+    $admin = current_admin();
+    $adminName = (string)($admin['username'] ?? 'Admin');
+    $adminInitial = str_sub_u($adminName, 0, 1);
     $links = [
         [
-            'label' => '内容管理',
-            'note' => '文章与页面',
+            'label' => '博客概览',
+            'icon' => 'overview',
+            'note' => '浏览与统计',
             'href' => url_for('admin'),
             'active' => $active === 'admin',
         ],
         [
-            'label' => '写新内容',
+            'label' => '撰写文章',
+            'icon' => 'write',
             'note' => '发布文章或页面',
             'href' => url_for('write'),
             'active' => in_array($active, ['write', 'edit'], true),
         ],
         [
-            'label' => '查看站点',
-            'note' => '打开前台',
-            'href' => url_for('home'),
-            'active' => false,
+            'label' => '文章管理',
+            'icon' => 'posts',
+            'note' => '列表与发布',
+            'href' => url_for('admin_posts'),
+            'active' => $active === 'posts',
         ],
         [
-            'label' => '退出登录',
-            'note' => '结束当前会话',
-            'href' => url_for('logout'),
-            'active' => false,
+            'label' => '分类管理',
+            'icon' => 'categories',
+            'note' => '分类与排序',
+            'href' => url_for('admin_categories'),
+            'active' => $active === 'categories',
+        ],
+        [
+            'label' => '站点设置',
+            'icon' => 'settings',
+            'note' => '基础配置',
+            'href' => url_for('admin_settings'),
+            'active' => $active === 'settings',
         ],
     ];
 
     ob_start();
     ?>
     <aside class="admin-side admin-animate admin-animate--1">
-      <section class="admin-side__panel">
+      <a class="admin-side__brand" href="<?= h(url_for('admin')) ?>" title="<?= h($siteName) ?>" aria-label="<?= h($siteName) ?>">
+        <?= admin_icon('home') ?>
+        <span class="admin-side__brand-text"><?= h($siteName) ?></span>
+      </a>
+
+      <section class="admin-side__panel admin-side__panel--nav">
         <p class="admin-side__eyebrow">管理导航</p>
         <nav class="admin-side__nav" aria-label="Admin">
           <?php foreach ($links as $link): ?>
-            <a class="admin-side__link<?= $link['active'] ? ' is-active' : '' ?>" href="<?= h((string)$link['href']) ?>"<?= $link['active'] ? ' aria-current="page"' : '' ?>>
+            <a class="admin-side__link<?= $link['active'] ? ' is-active' : '' ?>" href="<?= h((string)$link['href']) ?>" title="<?= h((string)$link['label']) ?>" aria-label="<?= h((string)$link['label']) ?>"<?= $link['active'] ? ' aria-current="page"' : '' ?>>
+              <?= admin_icon((string)$link['icon']) ?>
               <strong><?= h((string)$link['label']) ?></strong>
               <span><?= h((string)$link['note']) ?></span>
             </a>
@@ -1409,9 +1745,31 @@ function render_admin_sidebar(string $active, array $summary = []): string
           <?php endif; ?>
         </section>
       <?php endif; ?>
+
+      <div class="admin-side__footer">
+        <span class="admin-side__avatar"><?= h($adminInitial) ?></span>
+        <span class="admin-side__footer-text"><?= h($adminName) ?></span>
+        <a class="admin-side__logout" href="<?= h(url_for('logout')) ?>">退出登录</a>
+      </div>
     </aside>
     <?php
 
+    return (string)ob_get_clean();
+}
+
+function render_admin_topbar(string $title, string $actionLabel = '', string $actionUrl = ''): string
+{
+    ob_start();
+    ?>
+    <div class="admin-topbar">
+      <div class="admin-crumb">控制台 / <b><?= h($title) ?></b></div>
+      <div class="admin-topbar__actions">
+        <?php if ($actionLabel !== '' && $actionUrl !== ''): ?>
+          <a class="button" href="<?= h($actionUrl) ?>"><?= h($actionLabel) ?></a>
+        <?php endif; ?>
+      </div>
+    </div>
+    <?php
     return (string)ob_get_clean();
 }
 
@@ -1466,7 +1824,7 @@ function render_home(int $page): void
     }
 
     $posts = fetch_published_posts($perPage, ($page - 1) * $perPage);
-    $siteName = setting('site_name', 'Paper Notes');
+    $siteName = setting('site_name', default_settings()['site_name']);
     $tagline = setting('site_tagline', '');
 
     ob_start();
@@ -1547,6 +1905,7 @@ function render_archives(): void
     $content = (string)ob_get_clean();
 
     render_layout('归档', $content, [
+        'active' => 'archives',
         'mode' => 'public',
         'description' => '已发布文章归档',
     ]);
@@ -1554,6 +1913,8 @@ function render_archives(): void
 
 function render_post_page(array $post): void
 {
+    increment_content_views($post);
+
     $neighbors = post_neighbors($post);
     $state = post_state($post);
     $author = setting('author_name', 'Admin');
@@ -1609,6 +1970,8 @@ function render_post_page(array $post): void
 
 function render_page_view(array $page): void
 {
+    increment_content_views($page);
+
     $displayTime = (int)($page['published_at'] ?: $page['updated_at'] ?: $page['created_at']);
 
     ob_start();
@@ -1711,7 +2074,7 @@ function render_tag_page(string $slug): void
 
 function render_rss_feed(): void
 {
-    $siteName = setting('site_name', 'Paper Notes');
+    $siteName = setting('site_name', default_settings()['site_name']);
     $description = setting('site_description', setting('site_tagline', ''));
     $home = absolute_url(url_for('home'));
     $items = fetch_feed_posts(20);
@@ -1798,17 +2161,7 @@ function render_admin_page(): void
     require_admin();
 
     $metrics = admin_metrics();
-    $posts = fetch_admin_posts();
-    $siteName = setting('site_name', 'Paper Notes');
-    $sidebar = render_admin_sidebar('admin', [
-        'title' => '站点概况',
-        'stats' => [
-            ['label' => '总内容', 'value' => (string)$metrics['total']],
-            ['label' => '已发布', 'value' => (string)$metrics['published']],
-            ['label' => '草稿 / 定时', 'value' => (string)($metrics['drafts'] + $metrics['scheduled'])],
-            ['label' => '独立页面', 'value' => (string)$metrics['pages']],
-        ],
-    ]);
+    $sidebar = render_admin_sidebar('admin');
 
     ob_start();
     ?>
@@ -1816,139 +2169,74 @@ function render_admin_page(): void
       <?= $sidebar ?>
 
       <div class="admin-main">
-        <section class="panel admin-masthead admin-animate admin-animate--2">
-          <div class="panel__body admin-masthead__body">
-            <div class="admin-masthead__intro">
-              <img class="admin-masthead__logo" src="<?= h(theme_logo_url()) ?>" width="72" height="72" alt="<?= h($siteName) ?>">
-              <div class="admin-masthead__copy">
-                <p class="admin-masthead__eyebrow">Content Studio</p>
-                <h1 class="admin-masthead__title">写作后台</h1>
-                <p class="admin-masthead__lead">管理站点信息、草稿、已发布文章和定时发布内容。</p>
-                <div class="admin-masthead__meta">
-                  <span><strong><?= h((string)$metrics['published']) ?></strong> 已发布</span>
-                  <span><strong><?= h((string)($metrics['drafts'] + $metrics['scheduled'])) ?></strong> 草稿 / 定时</span>
-                  <span><strong><?= h((string)$metrics['pages']) ?></strong> 独立页面</span>
-                </div>
-              </div>
-            </div>
-            <div class="admin-masthead__actions">
-              <a class="button" href="<?= h(url_for('write')) ?>">新内容</a>
-              <a class="button button--secondary" href="<?= h(url_for('home')) ?>">查看站点</a>
-            </div>
-          </div>
-        </section>
+        <?= render_admin_topbar('博客数据预览') ?>
 
         <div class="admin-grid">
           <section class="panel admin-list-panel admin-animate admin-animate--3">
             <div class="panel__header">
-              <h2>概览</h2>
-              <p class="panel__meta">当前内容状态与发布节奏。</p>
+              <h2>博客概览</h2>
+              <p class="panel__meta">只显示访问和内容统计数据。</p>
             </div>
             <div class="panel__body">
               <div class="metric-grid">
                 <div class="metric-card">
-                  <span class="metric-card__label">总内容</span>
-                  <strong class="metric-card__value"><?= h((string)$metrics['total']) ?></strong>
+                  <span class="metric-card__label">总浏览量</span>
+                  <strong class="metric-card__value"><?= h((string)$metrics['total_views']) ?></strong>
+                  <span class="metric-card__trend">公开文章与页面累计</span>
                 </div>
                 <div class="metric-card">
                   <span class="metric-card__label">已发布文章</span>
                   <strong class="metric-card__value"><?= h((string)$metrics['published']) ?></strong>
+                  <span class="metric-card__trend">前台可访问内容</span>
                 </div>
                 <div class="metric-card">
-                  <span class="metric-card__label">独立页面</span>
-                  <strong class="metric-card__value"><?= h((string)$metrics['pages']) ?></strong>
+                  <span class="metric-card__label">分类数</span>
+                  <strong class="metric-card__value"><?= h((string)$metrics['categories']) ?></strong>
+                  <span class="metric-card__trend">文章分类总数</span>
                 </div>
                 <div class="metric-card">
-                  <span class="metric-card__label">草稿 / 定时</span>
-                  <strong class="metric-card__value"><?= h((string)($metrics['drafts'] + $metrics['scheduled'])) ?></strong>
+                  <span class="metric-card__label">平均浏览</span>
+                  <strong class="metric-card__value"><?= h((string)$metrics['avg_views']) ?></strong>
+                  <span class="metric-card__trend">按文章数粗略计算</span>
                 </div>
               </div>
-            </div>
-          </section>
-
-          <section class="panel admin-list-panel admin-animate admin-animate--4">
-            <div class="panel__header">
-              <h2>站点设置</h2>
-              <p class="panel__meta">名称、地址、首页展示与伪静态配置。</p>
-            </div>
-            <div class="panel__body">
-              <form class="form-stack" method="post" action="<?= h(url_for('save_settings')) ?>">
-                <?= csrf_field() ?>
-                <div class="field-grid">
-                  <div class="field">
-                    <label for="site_name">站点名称</label>
-                    <input id="site_name" name="site_name" type="text" value="<?= h(setting('site_name')) ?>" required>
-                  </div>
-                  <div class="field">
-                    <label for="author_name">作者名</label>
-                    <input id="author_name" name="author_name" type="text" value="<?= h(setting('author_name')) ?>" required>
-                  </div>
-                </div>
-                <div class="field">
-                  <label for="site_url">站点地址</label>
-                  <input id="site_url" name="site_url" type="url" value="<?= h(setting('site_url')) ?>" placeholder="https://example.com/blog">
-                  <p class="field-hint">RSS 会优先使用这里的绝对地址，子目录部署时请带上完整路径。</p>
-                </div>
-                <div class="field">
-                  <label>顶部 Logo</label>
-                  <div class="settings-logo">
-                    <img class="settings-logo__preview" src="<?= h(theme_logo_url()) ?>" width="56" height="56" alt="<?= h($siteName) ?>">
-                    <div class="settings-logo__copy">
-                      <strong>logo.png</strong>
-                      <p class="field-hint">后台和前台顶部统一读取项目根目录下的本地文件 `logo.png`。</p>
-                    </div>
-                  </div>
-                </div>
-                <div class="field">
-                  <label for="footer_beian">备案号</label>
-                  <input id="footer_beian" name="footer_beian" type="text" value="<?= h(setting('footer_beian')) ?>" placeholder="京 ICP 备 12345678 号">
-                </div>
-                <div class="field-grid">
-                  <div class="field">
-                    <label for="posts_per_page">首页每页文章数</label>
-                    <input id="posts_per_page" name="posts_per_page" type="number" min="1" max="24" value="<?= h(setting('posts_per_page', '6')) ?>">
-                  </div>
-                  <div class="field">
-                    <label for="pretty_url">伪静态 URL</label>
-                    <select id="pretty_url" name="pretty_url">
-                      <option value="0"<?= setting('pretty_url', '0') === '0' ? ' selected' : '' ?>>关闭</option>
-                      <option value="1"<?= setting('pretty_url', '0') === '1' ? ' selected' : '' ?>>开启</option>
-                    </select>
-                    <p class="field-hint">开启后链接会变成 `/post/slug` 这类路径，需要服务器 rewrite 支持。</p>
-                  </div>
-                </div>
-                <div class="field">
-                  <label for="site_tagline">首页副标题</label>
-                  <input id="site_tagline" name="site_tagline" type="text" value="<?= h(setting('site_tagline')) ?>">
-                </div>
-                <div class="field">
-                  <label for="site_description">站点描述</label>
-                  <textarea id="site_description" name="site_description" rows="3"><?= h(setting('site_description')) ?></textarea>
-                </div>
-                <div class="field">
-                  <label for="home_intro">头部一句话</label>
-                  <textarea id="home_intro" name="home_intro" rows="4"><?= h(setting('home_intro')) ?></textarea>
-                </div>
-                <div class="field">
-                  <label for="site_footer">页脚文案</label>
-                  <input id="site_footer" name="site_footer" type="text" value="<?= h(setting('site_footer')) ?>" placeholder="支持 {year} 占位符">
-                </div>
-                <div class="action-row">
-                  <button class="button" type="submit">保存设置</button>
-                </div>
-              </form>
             </div>
           </section>
         </div>
+      </div>
+    </div>
+    <?php
+    $content = (string)ob_get_clean();
 
-        <section class="panel admin-list-panel admin-animate admin-animate--5">
+    render_layout('后台概览', $content, [
+        'active' => 'admin',
+        'wide' => true,
+        'description' => '博客后台概览',
+    ]);
+}
+
+function render_admin_posts_page(): void
+{
+    require_admin();
+
+    $posts = fetch_admin_posts();
+    $sidebar = render_admin_sidebar('posts');
+
+    ob_start();
+    ?>
+    <div class="admin-shell">
+      <?= $sidebar ?>
+
+      <div class="admin-main">
+        <?= render_admin_topbar('文章管理') ?>
+
+        <section class="panel admin-list-panel admin-animate admin-animate--2">
           <div class="panel__header">
             <div class="admin-head">
               <div class="admin-head-left">
-                <h2>内容管理</h2>
-                <p class="panel__meta">最近更新的文章和独立页面。</p>
+                <h2>文章管理</h2>
+                <p class="panel__meta">管理文章、独立页面、分类、状态和浏览量。</p>
               </div>
-              <a class="button button--secondary" href="<?= h(url_for('write')) ?>">新内容</a>
             </div>
           </div>
           <div class="panel__body panel__body--flush">
@@ -1968,33 +2256,24 @@ function render_admin_page(): void
                   <?php foreach ($posts as $post): ?>
                     <?php $state = post_state($post); ?>
                     <tr>
-                      <td>
-                        <span class="content-kind content-kind--<?= h(content_kind($post)) ?>"><?= h(content_type_label($post)) ?></span>
-                      </td>
+                      <td><span class="content-kind content-kind--<?= h(content_kind($post)) ?>"><?= h(content_type_label($post)) ?></span></td>
                       <td>
                         <div class="table-title">
-                          <strong><?= h($post['title']) ?></strong>
-                          <span><?= h(content_public_path($post)) ?></span>
+                          <strong><a href="<?= h(url_for('edit', ['id' => $post['id']])) ?>"><?= h($post['title']) ?></a></strong>
                         </div>
                       </td>
-                      <td>
-                        <span class="status-badge status-badge--<?= h($state['class']) ?>"><?= h($state['label']) ?></span>
-                      </td>
-                      <td>
-                        <time datetime="<?= h(date(DATE_ATOM, (int)$post['updated_at'])) ?>"><?= h(pretty_date((int)$post['updated_at'], true)) ?></time>
-                      </td>
+                      <td><span class="status-badge status-badge--<?= h($state['class']) ?>"><?= h($state['label']) ?></span></td>
+                      <td><time datetime="<?= h(date(DATE_ATOM, (int)$post['updated_at'])) ?>"><?= h(pretty_date((int)$post['updated_at'], true)) ?></time></td>
                       <td>
                         <div class="table-actions">
                           <a class="button button--ghost" href="<?= h(content_permalink($post)) ?>">查看</a>
                           <a class="button button--ghost" href="<?= h(url_for('edit', ['id' => $post['id']])) ?>">编辑</a>
-
                           <form method="post" action="<?= h(url_for('change_status')) ?>">
                             <?= csrf_field() ?>
                             <input type="hidden" name="id" value="<?= h($post['id']) ?>">
                             <input type="hidden" name="status" value="<?= h((string)$post['status'] === 'published' ? 'draft' : 'published') ?>">
                             <button class="button button--ghost" type="submit"><?= (string)$post['status'] === 'published' ? '转草稿' : '发布' ?></button>
                           </form>
-
                           <form method="post" action="<?= h(url_for('delete_post')) ?>" onsubmit="return confirm('确定删除这篇文章吗？');">
                             <?= csrf_field() ?>
                             <input type="hidden" name="id" value="<?= h($post['id']) ?>">
@@ -2020,10 +2299,245 @@ function render_admin_page(): void
     <?php
     $content = (string)ob_get_clean();
 
-    render_layout('后台', $content, [
-        'active' => 'admin',
+    render_layout('文章管理', $content, [
+        'active' => 'posts',
         'wide' => true,
-        'description' => '博客后台管理',
+        'description' => '博客文章管理',
+    ]);
+}
+
+function render_admin_categories_page(array $form = [], array $errors = []): void
+{
+    require_admin();
+
+    $categories = fetch_categories();
+    $editing = null;
+    $editId = (int)($_GET['id'] ?? $form['id'] ?? 0);
+    if ($editId > 0) {
+        $editing = one('SELECT * FROM categories WHERE id = ?', [$editId]);
+    }
+
+    $values = array_merge([
+        'id' => (string)($editing['id'] ?? ''),
+        'name' => (string)($editing['name'] ?? ''),
+        'slug' => (string)($editing['slug'] ?? ''),
+        'description' => (string)($editing['description'] ?? ''),
+        'sort_order' => (string)($editing['sort_order'] ?? '0'),
+    ], $form);
+    $sidebar = render_admin_sidebar('categories');
+
+    ob_start();
+    ?>
+    <div class="admin-shell">
+      <?= $sidebar ?>
+
+      <div class="admin-main">
+        <?= render_admin_topbar('分类管理') ?>
+
+        <div class="admin-grid admin-grid--split">
+          <section class="panel admin-list-panel admin-animate admin-animate--2">
+            <div class="panel__header">
+              <h2>分类列表</h2>
+              <p class="panel__meta">分类用于组织文章，不影响独立页面。</p>
+            </div>
+            <div class="panel__body panel__body--flush">
+              <?php if ($categories): ?>
+                <div class="table-wrap">
+                  <table class="admin-table">
+                    <thead>
+                    <tr>
+                      <th>分类</th>
+                      <th>Slug</th>
+                      <th>文章数</th>
+                      <th>排序</th>
+                      <th>操作</th>
+                    </tr>
+                    </thead>
+                    <tbody>
+                    <?php foreach ($categories as $category): ?>
+                      <tr>
+                        <td>
+                          <div class="table-title">
+                            <strong><?= h((string)$category['name']) ?></strong>
+                            <span><?= h((string)$category['description']) ?></span>
+                          </div>
+                        </td>
+                        <td><?= h((string)$category['slug']) ?></td>
+                        <td><?= h((string)$category['post_count']) ?></td>
+                        <td><?= h((string)$category['sort_order']) ?></td>
+                        <td>
+                          <div class="table-actions">
+                            <a class="button button--ghost" href="<?= h(url_with_query(url_for('admin_categories'), ['id' => (int)$category['id']])) ?>">编辑</a>
+                            <form method="post" action="<?= h(url_for('delete_category')) ?>" onsubmit="return confirm('确定删除这个分类吗？分类下文章会变为未分类。');">
+                              <?= csrf_field() ?>
+                              <input type="hidden" name="id" value="<?= h($category['id']) ?>">
+                              <button class="button button--danger" type="submit">删除</button>
+                            </form>
+                          </div>
+                        </td>
+                      </tr>
+                    <?php endforeach; ?>
+                    </tbody>
+                  </table>
+                </div>
+              <?php else: ?>
+                <div class="empty-state empty-state--inside">
+                  <p>还没有分类。</p>
+                </div>
+              <?php endif; ?>
+            </div>
+          </section>
+
+          <section class="panel admin-list-panel admin-animate admin-animate--3">
+            <div class="panel__header">
+              <h2><?= $editing ? '编辑分类' : '新建分类' ?></h2>
+              <p class="panel__meta">名称、URL 标识和排序。</p>
+            </div>
+            <div class="panel__body">
+              <?php if ($errors): ?>
+                <div class="flash flash--error"><?= h(implode(' ', $errors)) ?></div>
+              <?php endif; ?>
+
+              <form class="form-stack" method="post" action="<?= h(url_for('save_category')) ?>">
+                <?= csrf_field() ?>
+                <input type="hidden" name="id" value="<?= h((string)$values['id']) ?>">
+                <div class="field">
+                  <label for="category_name">分类名称</label>
+                  <input id="category_name" name="name" type="text" value="<?= h((string)$values['name']) ?>" required>
+                </div>
+                <div class="field-grid">
+                  <div class="field">
+                    <label for="category_slug">Slug</label>
+                    <input id="category_slug" name="slug" type="text" value="<?= h((string)$values['slug']) ?>" placeholder="留空自动生成">
+                  </div>
+                  <div class="field">
+                    <label for="category_sort">排序权重</label>
+                    <input id="category_sort" name="sort_order" type="number" value="<?= h((string)$values['sort_order']) ?>">
+                  </div>
+                </div>
+                <div class="field">
+                  <label for="category_description">分类描述</label>
+                  <textarea id="category_description" name="description" rows="4"><?= h((string)$values['description']) ?></textarea>
+                </div>
+                <div class="action-row">
+                  <?php if ($editing): ?>
+                    <a class="button button--secondary" href="<?= h(url_for('admin_categories')) ?>">取消编辑</a>
+                  <?php endif; ?>
+                  <button class="button" type="submit"><?= $editing ? '保存分类' : '创建分类' ?></button>
+                </div>
+              </form>
+            </div>
+          </section>
+        </div>
+      </div>
+    </div>
+    <?php
+    $content = (string)ob_get_clean();
+
+    render_layout('分类管理', $content, [
+        'active' => 'categories',
+        'wide' => true,
+        'description' => '博客分类管理',
+    ]);
+}
+
+function render_admin_settings_page(): void
+{
+    require_admin();
+
+    $siteName = setting('site_name', default_settings()['site_name']);
+    $sidebar = render_admin_sidebar('settings');
+
+    ob_start();
+    ?>
+    <div class="admin-shell">
+      <?= $sidebar ?>
+
+      <div class="admin-main">
+        <?= render_admin_topbar('站点设置') ?>
+
+        <section class="panel admin-list-panel admin-animate admin-animate--2">
+          <div class="panel__header">
+            <h2>站点设置</h2>
+            <p class="panel__meta">名称、地址、首页展示与伪静态配置。</p>
+          </div>
+          <div class="panel__body">
+            <form class="form-stack" method="post" action="<?= h(url_for('save_settings')) ?>">
+              <?= csrf_field() ?>
+              <div class="field-grid">
+                <div class="field">
+                  <label for="site_name">站点名称</label>
+                  <input id="site_name" name="site_name" type="text" value="<?= h(setting('site_name')) ?>" required>
+                </div>
+                <div class="field">
+                  <label for="author_name">作者名</label>
+                  <input id="author_name" name="author_name" type="text" value="<?= h(setting('author_name')) ?>" required>
+                </div>
+              </div>
+              <div class="field">
+                <label for="site_url">站点地址</label>
+                <input id="site_url" name="site_url" type="url" value="<?= h(setting('site_url')) ?>" placeholder="https://example.com/blog">
+                <p class="field-hint">RSS 会优先使用这里的绝对地址，子目录部署时请带上完整路径。</p>
+              </div>
+              <div class="field">
+                <label>顶部 Logo</label>
+                <div class="settings-logo">
+                  <img class="settings-logo__preview" src="<?= h(theme_logo_url()) ?>" width="56" height="56" alt="<?= h($siteName) ?>">
+                  <div class="settings-logo__copy">
+                    <strong>logo.png</strong>
+                    <p class="field-hint">后台和前台顶部统一读取项目根目录下的本地文件 `logo.png`。</p>
+                  </div>
+                </div>
+              </div>
+              <div class="field">
+                <label for="footer_beian">备案号</label>
+                <input id="footer_beian" name="footer_beian" type="text" value="<?= h(setting('footer_beian')) ?>" placeholder="京 ICP 备 12345678 号">
+              </div>
+              <div class="field-grid">
+                <div class="field">
+                  <label for="posts_per_page">首页每页文章数</label>
+                  <input id="posts_per_page" name="posts_per_page" type="number" min="1" max="24" value="<?= h(setting('posts_per_page', '6')) ?>">
+                </div>
+                <div class="field">
+                  <label for="pretty_url">伪静态 URL</label>
+                  <select id="pretty_url" name="pretty_url">
+                    <option value="0"<?= setting('pretty_url', '0') === '0' ? ' selected' : '' ?>>关闭</option>
+                    <option value="1"<?= setting('pretty_url', '0') === '1' ? ' selected' : '' ?>>开启</option>
+                  </select>
+                  <p class="field-hint">开启后链接会变成 `/post/slug` 这类路径，需要服务器 rewrite 支持。</p>
+                </div>
+              </div>
+              <div class="field">
+                <label for="site_tagline">首页副标题</label>
+                <input id="site_tagline" name="site_tagline" type="text" value="<?= h(setting('site_tagline')) ?>">
+              </div>
+              <div class="field">
+                <label for="site_description">站点描述</label>
+                <textarea id="site_description" name="site_description" rows="3"><?= h(setting('site_description')) ?></textarea>
+              </div>
+              <div class="field">
+                <label for="home_intro">头部一句话</label>
+                <textarea id="home_intro" name="home_intro" rows="4"><?= h(setting('home_intro')) ?></textarea>
+              </div>
+              <div class="field">
+                <label for="site_footer">页脚文案</label>
+                <input id="site_footer" name="site_footer" type="text" value="<?= h(setting('site_footer')) ?>" placeholder="支持 {year} 占位符">
+              </div>
+              <div class="action-row">
+                <button class="button" type="submit">保存设置</button>
+              </div>
+            </form>
+          </div>
+        </section>
+      </div>
+    </div>
+    <?php
+    $content = (string)ob_get_clean();
+
+    render_layout('站点设置', $content, [
+        'active' => 'settings',
+        'wide' => true,
+        'description' => '博客站点设置',
     ]);
 }
 
@@ -2033,6 +2547,7 @@ function render_editor_page(?array $existing = null, array $form = [], array $er
 
     $defaults = [
         'kind' => (string)($existing['kind'] ?? 'post'),
+        'category_id' => (string)($existing['category_id'] ?? ''),
         'title' => (string)($existing['title'] ?? ''),
         'slug' => (string)($existing['slug'] ?? ''),
         'tags_input' => implode(', ', post_tags($existing ?? [])),
@@ -2044,7 +2559,8 @@ function render_editor_page(?array $existing = null, array $form = [], array $er
 
     $values = array_merge($defaults, $form);
     $isEdit = $existing !== null;
-    $siteName = setting('site_name', 'Paper Notes');
+    $siteName = setting('site_name', default_settings()['site_name']);
+    $categories = category_options();
     $sidebar = render_admin_sidebar($isEdit ? 'edit' : 'write', [
         'title' => '写作提示',
         'items' => [
@@ -2060,13 +2576,15 @@ function render_editor_page(?array $existing = null, array $form = [], array $er
       <?= $sidebar ?>
 
       <div class="admin-main">
+        <?= render_admin_topbar($isEdit ? '编辑内容' : '撰写文章') ?>
+
         <section class="panel admin-masthead admin-masthead--compact admin-animate admin-animate--2">
           <div class="panel__body admin-masthead__body">
             <div class="admin-masthead__intro">
               <img class="admin-masthead__logo" src="<?= h(theme_logo_url()) ?>" width="72" height="72" alt="<?= h($siteName) ?>">
               <div class="admin-masthead__copy">
                 <p class="admin-masthead__eyebrow"><?= $isEdit ? 'Edit' : 'Write' ?></p>
-                <h1 class="admin-masthead__title"><?= $isEdit ? '编辑内容' : '写新内容' ?></h1>
+                <h1 class="admin-masthead__title"><?= $isEdit ? '编辑内容' : '撰写文章' ?></h1>
                 <p class="admin-masthead__lead">支持基础 Markdown，可创建文章或独立页面。</p>
               </div>
             </div>
@@ -2077,10 +2595,6 @@ function render_editor_page(?array $existing = null, array $form = [], array $er
         </section>
 
         <section class="panel editor-panel admin-animate admin-animate--3">
-          <div class="panel__header">
-            <h2><?= $isEdit ? '正文与发布设置' : '填写内容' ?></h2>
-            <p class="panel__meta">支持标题、列表、引用、链接、代码块和行内代码。</p>
-          </div>
           <div class="panel__body">
             <?php if ($errors): ?>
               <div class="flash flash--error">
@@ -2095,7 +2609,7 @@ function render_editor_page(?array $existing = null, array $form = [], array $er
                 <input id="title" name="title" type="text" value="<?= h((string)$values['title']) ?>" required>
               </div>
 
-              <div class="field-grid field-grid--triple">
+              <div class="field-grid field-grid--quad">
                 <div class="field">
                   <label for="kind">内容类型</label>
                   <select id="kind" name="kind">
@@ -2106,6 +2620,15 @@ function render_editor_page(?array $existing = null, array $form = [], array $er
                 <div class="field">
                   <label for="slug">Slug</label>
                   <input id="slug" name="slug" type="text" value="<?= h((string)$values['slug']) ?>" placeholder="留空将自动生成">
+                </div>
+                <div class="field">
+                  <label for="category_id">分类</label>
+                  <select id="category_id" name="category_id">
+                    <option value="">未分类</option>
+                    <?php foreach ($categories as $category): ?>
+                      <option value="<?= h($category['id']) ?>"<?= (string)$values['category_id'] === (string)$category['id'] ? ' selected' : '' ?>><?= h($category['name']) ?></option>
+                    <?php endforeach; ?>
+                  </select>
                 </div>
                 <div class="field">
                   <label for="published_at">发布时间</label>
@@ -2136,11 +2659,21 @@ function render_editor_page(?array $existing = null, array $form = [], array $er
               <div class="field">
                 <label for="content">正文</label>
                 <textarea id="content" class="editor-textarea" name="content" rows="18" required><?= h((string)$values['content']) ?></textarea>
-                <p class="field-hint">支持标题、列表、引用、链接、代码块和行内代码。</p>
+              </div>
+
+              <div class="field">
+                <label for="attachmentInput">上传附件</label>
+                <div class="attachment-uploader" data-upload-url="<?= h(url_for('upload_attachment')) ?>" data-csrf="<?= h(csrf_token()) ?>">
+                  <input id="attachmentInput" class="attachment-input" type="file" name="attachments[]" multiple>
+                  <label class="attachment-drop" for="attachmentInput">
+                    <span class="attachment-drop__title">选择或拖入附件</span>
+                    <span class="attachment-drop__hint">可同时上传多个附件，每个最大 30M；图片上传完成后显示缩略图并插入 Markdown。</span>
+                  </label>
+                  <div class="attachment-list" aria-live="polite"></div>
+                </div>
               </div>
 
               <div class="action-row">
-                <a class="button button--secondary" href="<?= h(url_for('admin')) ?>">返回后台</a>
                 <button class="button" type="submit"><?= $isEdit ? '保存修改' : '创建文章' ?></button>
               </div>
             </form>
@@ -2243,10 +2776,22 @@ switch ($action) {
         render_admin_page();
         break;
 
+    case 'admin_posts':
+        render_admin_posts_page();
+        break;
+
+    case 'admin_categories':
+        render_admin_categories_page();
+        break;
+
+    case 'admin_settings':
+        render_admin_settings_page();
+        break;
+
     case 'save_settings':
         require_admin();
         if ($_SERVER['REQUEST_METHOD'] !== 'POST') {
-            redirect_to(url_for('admin'));
+            redirect_to(url_for('admin_settings'));
         }
         verify_csrf();
         $siteName = trim((string)($_POST['site_name'] ?? ''));
@@ -2267,7 +2812,64 @@ switch ($action) {
             'site_footer' => trim((string)($_POST['site_footer'] ?? '')),
         ]);
         set_flash('success', '站点设置已更新。');
-        redirect_to(url_for('admin'));
+        redirect_to(url_for('admin_settings'));
+        break;
+
+    case 'save_category':
+        require_admin();
+        if ($_SERVER['REQUEST_METHOD'] !== 'POST') {
+            redirect_to(url_for('admin_categories'));
+        }
+        verify_csrf();
+        $id = (int)($_POST['id'] ?? 0);
+        $existing = $id > 0 ? one('SELECT * FROM categories WHERE id = ?', [$id]) : null;
+        [$data, $errors] = validate_category_input($_POST, $existing);
+        if ($errors) {
+            render_admin_categories_page([
+                'id' => (string)$id,
+                'name' => (string)($_POST['name'] ?? ''),
+                'slug' => (string)($_POST['slug'] ?? ''),
+                'description' => (string)($_POST['description'] ?? ''),
+                'sort_order' => (string)($_POST['sort_order'] ?? '0'),
+            ], $errors);
+        }
+        if ($existing) {
+            q(
+                'UPDATE categories SET name = ?, slug = ?, description = ?, sort_order = ?, updated_at = ? WHERE id = ?',
+                [$data['name'], $data['slug'], $data['description'], $data['sort_order'], time(), $id]
+            );
+            set_flash('success', '分类已保存。');
+        } else {
+            $now = time();
+            q(
+                'INSERT INTO categories(name, slug, description, sort_order, created_at, updated_at) VALUES(?,?,?,?,?,?)',
+                [$data['name'], $data['slug'], $data['description'], $data['sort_order'], $now, $now]
+            );
+            set_flash('success', '分类已创建。');
+        }
+        redirect_to(url_for('admin_categories'));
+        break;
+
+    case 'delete_category':
+        require_admin();
+        if ($_SERVER['REQUEST_METHOD'] !== 'POST') {
+            redirect_to(url_for('admin_categories'));
+        }
+        verify_csrf();
+        $id = (int)($_POST['id'] ?? 0);
+        if ($id > 0) {
+            q('UPDATE posts SET category_id = NULL WHERE category_id = ?', [$id]);
+            q('DELETE FROM categories WHERE id = ?', [$id]);
+        }
+        set_flash('success', '分类已删除。');
+        redirect_to(url_for('admin_categories'));
+        break;
+
+    case 'upload_attachment':
+        if ($_SERVER['REQUEST_METHOD'] !== 'POST') {
+            json_response(['ok' => false, 'error' => '仅支持 POST 上传。'], 405);
+        }
+        handle_attachment_upload();
         break;
 
     case 'write':
@@ -2278,9 +2880,10 @@ switch ($action) {
             if (!$errors) {
                 $now = time();
                 q(
-                    'INSERT INTO posts(kind, slug, title, tags, excerpt, content, status, published_at, created_at, updated_at) VALUES(?,?,?,?,?,?,?,?,?,?)',
+                    'INSERT INTO posts(kind, category_id, slug, title, tags, excerpt, content, status, published_at, created_at, updated_at) VALUES(?,?,?,?,?,?,?,?,?,?,?)',
                     [
                         $data['kind'],
+                        $data['category_id'],
                         $data['slug'],
                         $data['title'],
                         $data['tags'],
@@ -2298,6 +2901,7 @@ switch ($action) {
             }
             render_editor_page(null, [
                 'kind' => (string)($_POST['kind'] ?? 'post'),
+                'category_id' => (string)($_POST['category_id'] ?? ''),
                 'title' => (string)($_POST['title'] ?? ''),
                 'slug' => (string)($_POST['slug'] ?? ''),
                 'tags_input' => (string)($_POST['tags_input'] ?? ''),
@@ -2322,9 +2926,10 @@ switch ($action) {
             [$data, $errors] = validate_post_input($_POST, $post);
             if (!$errors) {
                 q(
-                    'UPDATE posts SET kind = ?, slug = ?, title = ?, tags = ?, excerpt = ?, content = ?, status = ?, published_at = ?, updated_at = ? WHERE id = ?',
+                    'UPDATE posts SET kind = ?, category_id = ?, slug = ?, title = ?, tags = ?, excerpt = ?, content = ?, status = ?, published_at = ?, updated_at = ? WHERE id = ?',
                     [
                         $data['kind'],
+                        $data['category_id'],
                         $data['slug'],
                         $data['title'],
                         $data['tags'],
@@ -2341,6 +2946,7 @@ switch ($action) {
             }
             render_editor_page($post, [
                 'kind' => (string)($_POST['kind'] ?? 'post'),
+                'category_id' => (string)($_POST['category_id'] ?? ''),
                 'title' => (string)($_POST['title'] ?? ''),
                 'slug' => (string)($_POST['slug'] ?? ''),
                 'tags_input' => (string)($_POST['tags_input'] ?? ''),
@@ -2356,7 +2962,7 @@ switch ($action) {
     case 'change_status':
         require_admin();
         if ($_SERVER['REQUEST_METHOD'] !== 'POST') {
-            redirect_to(url_for('admin'));
+            redirect_to(url_for('admin_posts'));
         }
         verify_csrf();
         $id = (int)($_POST['id'] ?? 0);
@@ -2372,19 +2978,19 @@ switch ($action) {
         }
         q('UPDATE posts SET status = ?, published_at = ?, updated_at = ? WHERE id = ?', [$target, $publishedAt, time(), $id]);
         set_flash('success', $target === 'published' ? '文章已发布。' : '文章已转为草稿。');
-        redirect_to(url_for('admin'));
+        redirect_to(url_for('admin_posts'));
         break;
 
     case 'delete_post':
         require_admin();
         if ($_SERVER['REQUEST_METHOD'] !== 'POST') {
-            redirect_to(url_for('admin'));
+            redirect_to(url_for('admin_posts'));
         }
         verify_csrf();
         $id = (int)($_POST['id'] ?? 0);
         q('DELETE FROM posts WHERE id = ?', [$id]);
         set_flash('success', '文章已删除。');
-        redirect_to(url_for('admin'));
+        redirect_to(url_for('admin_posts'));
         break;
 
     default:

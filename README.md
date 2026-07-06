@@ -72,7 +72,7 @@ http://127.0.0.1:8000/install.php
 - `/tags`
 - `/tag/php`
 - `/post/your-slug`
-- `/pages/about`
+- `/about`
 - `/rss.xml`
 - `/login`
 - `/admin`
