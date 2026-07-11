@@ -4,7 +4,7 @@ declare(strict_types=1);
 
 session_start();
 
-const APP_VERSION = 'v1.0.0';
+const APP_VERSION = 'v1.0.1';
 const DATA_DIR = __DIR__ . '/data';
 const CACHE_DIR = __DIR__ . '/cache';
 const UPLOAD_DIR = __DIR__ . '/uploads';
@@ -765,7 +765,7 @@ function site_footer_text(): string
 {
     $footer = trim(setting('site_footer'));
     if ($footer === '') {
-        $footer = '© 2016 - {year} Theme is Ying';
+        $footer = '© 2026 - {year} Theme by jkjoy.';
     }
     return str_replace('{year}', date('Y'), $footer);
 }
@@ -1710,16 +1710,13 @@ function render_layout(string $title, string $content, array $options = []): voi
               <span class="site-brand__meta"><?= $admin ? 'Blog Admin' : 'Admin Entry' ?></span>
             </span>
           </a>
-          <nav class="site-nav site-nav--admin" aria-label="Primary">
-            <?php if ($admin): ?>
+          <?php if ($admin): ?>
+            <nav class="site-nav site-nav--admin" aria-label="Primary">
               <a class="nav-link<?= $active === 'admin' ? ' is-active' : '' ?>" href="<?= h(url_for('admin')) ?>">管理后台</a>
               <a class="nav-link nav-link--pill<?= in_array($active, ['write', 'edit'], true) ? ' is-active' : '' ?>" href="<?= h(url_for('write')) ?>">撰写文章</a>
               <a class="nav-link" href="<?= h(url_for('logout')) ?>">退出</a>
-            <?php else: ?>
-              <a class="nav-link" href="<?= h(url_for('home')) ?>">返回首页</a>
-              <a class="nav-link<?= $active === 'login' ? ' is-active' : '' ?>" href="<?= h(url_for('login')) ?>">登录</a>
-            <?php endif; ?>
-          </nav>
+            </nav>
+          <?php endif; ?>
         </div>
       </header>
 
@@ -1733,7 +1730,7 @@ function render_layout(string $title, string $content, array $options = []): voi
       <footer class="site-footer">
         <div class="site-footer__inner">
           <span><?= h(site_footer_text()) ?></span>
-          <span class="site-footer__meta">PHP · SQLite · <?= h(APP_VERSION) ?></span>
+          <span class="site-footer__meta">Powered by Simple PHP Blog <?= h(APP_VERSION) ?></span>
         </div>
       </footer>
     </div>
@@ -2266,38 +2263,30 @@ function render_login_page(string $error = '', array $form = []): void
     ob_start();
     ?>
     <div class="auth-layout">
-      <section class="hero hero--compact auth-intro admin-animate admin-animate--1">
-        <p class="hero__eyebrow">Admin</p>
-        <h1 class="hero__title">登录后台</h1>
-        <p class="hero__lead">保留最小管理面，专注写作、编辑、发布和站点设置。</p>
-        <ul class="auth-points">
-          <li>登录后可管理文章、独立页面和站点信息。</li>
-          <li>支持草稿、定时发布和伪静态设置。</li>
-        </ul>
-      </section>
-
-      <section class="panel auth-panel admin-animate admin-animate--2">
-        <div class="panel__header">
-          <h2>账号登录</h2>
-          <p class="panel__meta">使用安装时创建的管理员账号。</p>
-        </div>
+      <section class="panel auth-panel admin-animate admin-animate--1">
         <div class="panel__body">
+          <header class="auth-heading">
+            <p class="auth-heading__eyebrow">Admin access</p>
+            <h1>登录后台</h1>
+            <p>使用管理员账号继续。</p>
+          </header>
+
           <?php if ($error !== ''): ?>
-            <div class="flash flash--error"><?= h($error) ?></div>
+            <div class="flash flash--error" role="alert"><?= h($error) ?></div>
           <?php endif; ?>
 
           <form class="form-stack" method="post" action="<?= h(url_for('login')) ?>">
             <?= csrf_field() ?>
             <div class="field">
               <label for="username">用户名</label>
-              <input id="username" name="username" type="text" value="<?= h((string)($form['username'] ?? '')) ?>" autocomplete="username" required>
+              <input id="username" name="username" type="text" value="<?= h((string)($form['username'] ?? '')) ?>" autocomplete="username" required autofocus>
             </div>
             <div class="field">
               <label for="password">密码</label>
               <input id="password" name="password" type="password" autocomplete="current-password" required>
             </div>
-            <div class="action-row action-row--start">
-              <button class="button" type="submit">登录</button>
+            <div class="action-row auth-actions">
+              <button class="button" type="submit">登录后台</button>
             </div>
           </form>
         </div>

@@ -1090,8 +1090,6 @@ textarea:focus {
 .theme-admin .table-title span,
 .theme-admin .field-hint,
 .theme-admin .admin-side__eyebrow,
-.theme-admin .auth-points,
-.theme-admin .auth-points li,
 .theme-admin .admin-side__stats dt,
 .theme-admin .admin-side__list,
 .theme-admin .site-footer__meta {
@@ -1212,57 +1210,70 @@ textarea:focus {
 
 .theme-admin .auth-layout {
   display: grid;
-  grid-template-columns: minmax(0, 1fr) minmax(360px, 420px);
-  gap: 24px;
-  align-items: center;
-  min-height: calc(100vh - 164px);
+  place-items: center;
+  min-height: calc(100vh - 220px);
+  padding: 24px 0;
 }
 
-.theme-admin .auth-intro {
-  max-width: 620px;
+.theme-admin .auth-panel {
+  width: min(100%, 400px);
+  border: 0;
+  border-radius: 10px;
+  box-shadow:
+    0 0 0 1px rgba(0, 0, 0, 0.06),
+    0 1px 2px -1px rgba(0, 0, 0, 0.06),
+    0 18px 48px rgba(31, 35, 41, 0.08);
 }
 
-.theme-admin .hero__eyebrow {
+.theme-admin .auth-panel .panel__body {
+  padding: 30px;
+}
+
+.theme-admin .auth-heading {
+  margin-bottom: 24px;
+}
+
+.theme-admin .auth-heading__eyebrow {
+  margin: 0 0 8px;
   color: var(--admin-soft);
   font: 700 11px/1.2 var(--font-ui);
-  letter-spacing: 0.12em;
+  letter-spacing: 0.08em;
   text-transform: uppercase;
 }
 
-.theme-admin .hero__title {
+.theme-admin .auth-heading h1 {
+  margin: 0;
   color: var(--admin-text);
-  font-size: clamp(2rem, 5vw, 3.2rem);
+  font: 650 24px/1.25 var(--font-ui);
   letter-spacing: 0;
+  text-wrap: balance;
 }
 
-.theme-admin .hero__lead {
-  max-width: 36rem;
+.theme-admin .auth-heading p:last-child {
+  margin: 8px 0 0;
   color: var(--admin-muted);
-  font: 500 15px/1.7 var(--font-ui);
+  font: 500 13px/1.55 var(--font-ui);
+  text-wrap: pretty;
 }
 
-.theme-admin .auth-points {
-  display: grid;
-  gap: 10px;
-  margin: 18px 0 0;
-  padding: 0;
-  list-style: none;
+.theme-admin .auth-panel .form-stack {
+  gap: 18px;
 }
 
-.theme-admin .auth-points li {
-  position: relative;
-  padding-left: 16px;
+.theme-admin .auth-panel input {
+  min-height: 44px;
 }
 
-.theme-admin .auth-points li::before {
-  content: "";
-  position: absolute;
-  top: 0.62em;
-  left: 0;
-  width: 6px;
-  height: 6px;
-  border-radius: 999px;
-  background: var(--admin-success);
+.theme-admin .auth-actions .button {
+  width: 100%;
+  min-height: 44px;
+  transition-property: background-color, box-shadow, transform;
+  transition-duration: 160ms;
+  transition-timing-function: cubic-bezier(0.2, 0, 0, 1);
+}
+
+.theme-admin .auth-actions .button:active {
+  transform: scale(0.96);
 }
 
 .theme-admin:not(.theme-admin--guest) {
@@ -1869,10 +1880,6 @@ textarea:focus {
 }
 
 @media (max-width: 1280px) {
-  .theme-admin .auth-layout {
-    grid-template-columns: 1fr;
-  }
-
   .theme-admin:not(.theme-admin--guest) .admin-shell {
     grid-template-columns: 72px minmax(0, 1fr);
   }
@@ -1993,6 +2000,15 @@ textarea:focus {
   .theme-admin .panel__body {
     padding-left: 14px;
     padding-right: 14px;
+  }
+
+  .theme-admin .auth-layout {
+    min-height: calc(100vh - 190px);
+    padding: 16px 0;
+  }
+
+  .theme-admin .auth-panel .panel__body {
+    padding: 22px 20px;
   }
 
   .theme-admin:not(.theme-admin--guest) .admin-table {
