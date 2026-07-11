@@ -102,4 +102,3 @@ location ~ \.php$ {
 
 - `data/` 和 `cache/` 不应该被公网直接访问
 - 如果要重装，先删除 `data/install.lock`
-- SQLite 文件和配置文件不要提交到公开仓库

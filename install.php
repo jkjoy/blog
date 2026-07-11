@@ -5,7 +5,6 @@ declare(strict_types=1);
 const INSTALL_DATA_DIR = __DIR__ . '/data';
 const INSTALL_CACHE_DIR = __DIR__ . '/cache';
 const INSTALL_DB_CONFIG_FILE = INSTALL_DATA_DIR . '/config.php';
-const INSTALL_DEFAULT_DB_FILE = INSTALL_DATA_DIR . '/blog.sqlite';
 const INSTALL_LOCK_FILE = INSTALL_DATA_DIR . '/install.lock';
 const INSTALL_SETTINGS_CACHE_FILE = INSTALL_CACHE_DIR . '/settings.php';
 
@@ -41,13 +40,9 @@ function i_db_name(): string
     if (is_file(INSTALL_LOCK_FILE) && is_file(INSTALL_DB_CONFIG_FILE)) {
         $config = include INSTALL_DB_CONFIG_FILE;
         $name = is_array($config) ? basename((string)($config['db_file'] ?? '')) : '';
-        if ($name !== '' && preg_match('/^[A-Za-z0-9][A-Za-z0-9._-]*\.sqlite$/', $name)) {
+        if ($name !== '' && $name !== 'blog.sqlite' && preg_match('/^blog-[a-f0-9]{16}\.sqlite$/', $name)) {
             return $name;
         }
-    }
-
-    if (is_file(INSTALL_LOCK_FILE) && is_file(INSTALL_DEFAULT_DB_FILE)) {
-        return basename(INSTALL_DEFAULT_DB_FILE);
     }
 
     return 'blog-' . bin2hex(random_bytes(8)) . '.sqlite';
@@ -56,6 +51,14 @@ function i_db_name(): string
 function i_db_file(): string
 {
     return INSTALL_DATA_DIR . '/' . i_db_name();
+}
+
+function i_is_installed(): bool
+{
+    if (!is_file(INSTALL_LOCK_FILE) || !is_file(INSTALL_DB_CONFIG_FILE)) { return false; }
+    $config = include INSTALL_DB_CONFIG_FILE;
+    $name = is_array($config) ? basename((string)($config['db_file'] ?? '')) : '';
+    return preg_match('/^blog-[a-f0-9]{16}\.sqlite$/', $name) === 1 && is_file(INSTALL_DATA_DIR . '/' . $name);
 }
 
 function i_ensure_dirs(): void
@@ -67,6 +70,32 @@ function i_ensure_dirs(): void
     if (!is_dir(INSTALL_CACHE_DIR)) {
         mkdir(INSTALL_CACHE_DIR, 0755, true);
     }
+
+    if (!is_dir(__DIR__ . '/uploads')) {
+        mkdir(__DIR__ . '/uploads', 0755, true);
+    }
+}
+
+function i_environment_checks(): array
+{
+    i_ensure_dirs();
+    return [
+        ['label' => 'PHP 8.0 或更高版本', 'ok' => version_compare(PHP_VERSION, '8.0.0', '>=')],
+        ['label' => 'PDO 扩展', 'ok' => extension_loaded('pdo')],
+        ['label' => 'PDO SQLite 驱动', 'ok' => extension_loaded('pdo_sqlite') && in_array('sqlite', PDO::getAvailableDrivers(), true)],
+        ['label' => 'cURL 扩展（AI 接口）', 'ok' => extension_loaded('curl')],
+        ['label' => 'JSON 扩展', 'ok' => extension_loaded('json')],
+        ['label' => '安全随机数支持', 'ok' => function_exists('random_bytes')],
+        ['label' => 'data 目录可写', 'ok' => is_dir(INSTALL_DATA_DIR) && is_writable(INSTALL_DATA_DIR)],
+        ['label' => 'cache 目录可写', 'ok' => is_dir(INSTALL_CACHE_DIR) && is_writable(INSTALL_CACHE_DIR)],
+        ['label' => 'uploads 目录可写', 'ok' => is_dir(__DIR__ . '/uploads') && is_writable(__DIR__ . '/uploads')],
+    ];
+}
+
+function i_environment_ready(array $checks): bool
+{
+    foreach ($checks as $check) { if (empty($check['ok'])) { return false; } }
+    return true;
 }
 
 function i_save_db_config(string $dbName): void
@@ -217,12 +246,25 @@ function i_render_page(string $title, string $body): void
 
 function i_render_form(array $form, array $errors = []): void
 {
+    $environmentChecks = i_environment_checks();
+    $environmentReady = i_environment_ready($environmentChecks);
     ob_start();
     ?>
     <section class="hero hero--compact">
       <p class="hero__eyebrow">Install</p>
       <h1 class="hero__title">安装博客</h1>
       <p class="hero__lead">一次性初始化 SQLite、管理员账号和第一篇文章。</p>
+    </section>
+
+    <section class="panel install-environment">
+      <div class="panel__header"><h2>安装环境检测</h2><p class="panel__meta"><?= $environmentReady ? '当前环境满足安装要求。' : '请修复未通过项目后再安装。' ?></p></div>
+      <div class="panel__body">
+        <div class="environment-checks">
+          <?php foreach ($environmentChecks as $check): ?>
+            <div class="environment-check<?= $check['ok'] ? ' is-ok' : ' is-error' ?>"><strong><?= $check['ok'] ? '通过' : '未通过' ?></strong><span><?= i_h((string)$check['label']) ?></span></div>
+          <?php endforeach; ?>
+        </div>
+      </div>
     </section>
 
     <div class="admin-grid">
@@ -288,7 +330,7 @@ function i_render_form(array $form, array $errors = []): void
             </div>
 
             <div class="action-row">
-              <button class="button" type="submit">开始安装</button>
+              <button class="button" type="submit"<?= $environmentReady ? '' : ' disabled' ?>>开始安装</button>
             </div>
           </form>
         </div>
@@ -370,7 +412,7 @@ function i_render_success(string $siteName, string $adminUsername, string $dbNam
     i_render_page('安装完成', (string)ob_get_clean());
 }
 
-if (is_file(INSTALL_LOCK_FILE)) {
+if (i_is_installed()) {
     i_render_locked();
 }
 
@@ -401,6 +443,10 @@ $form = [
 $password = (string)($_POST['admin_password'] ?? '');
 $password2 = (string)($_POST['admin_password2'] ?? '');
 $errors = [];
+$environmentChecks = i_environment_checks();
+if (!i_environment_ready($environmentChecks)) {
+    $errors[] = '当前服务器环境未满足安装要求。';
+}
 
 if ($form['site_name'] === '') {
     $errors[] = '站点名称不能为空。';

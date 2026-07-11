@@ -2092,6 +2092,37 @@ textarea:focus {
   font-size: 18px;
 }
 
+.install-environment {
+  width: min(calc(100% - 32px), var(--width-wide));
+  margin: 0 auto 24px;
+}
+
+.environment-checks {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+  gap: 8px;
+}
+
+.environment-check {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-height: 40px;
+  padding: 8px 10px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--bg-strong);
+  font: 500 13px/1.4 var(--font-ui);
+}
+
+.environment-check strong {
+  color: var(--success);
+}
+
+.environment-check.is-error strong {
+  color: var(--danger);
+}
+
 /* Terminal public theme */
 @scope (.theme-public) {
 :scope{--bg:#0a0f0a;--bg-alt:#0d130d;--fg:#c8e6c8;--green:#7ec699;--bright:#a8e8a8;--dim:#4a7a4a;--amber:#ffb86c;--blue:#7aa6da;--red:#cc6666;--grey:#5a6a5a;--line:#2a3a2a;--glow:rgba(168,232,168,.45)}

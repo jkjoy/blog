@@ -4,12 +4,11 @@ declare(strict_types=1);
 
 session_start();
 
-const APP_VERSION = 'v0.1.6';
+const APP_VERSION = 'v1.0.0';
 const DATA_DIR = __DIR__ . '/data';
 const CACHE_DIR = __DIR__ . '/cache';
 const UPLOAD_DIR = __DIR__ . '/uploads';
 const DB_CONFIG_FILE = DATA_DIR . '/config.php';
-const DEFAULT_DB_FILE = DATA_DIR . '/blog.sqlite';
 const INSTALL_LOCK_FILE = DATA_DIR . '/install.lock';
 const SETTINGS_CACHE_FILE = CACHE_DIR . '/settings.php';
 
@@ -18,15 +17,20 @@ function db_file_path(): string
     if (is_file(DB_CONFIG_FILE)) {
         $config = include DB_CONFIG_FILE;
         $name = is_array($config) ? basename((string)($config['db_file'] ?? '')) : '';
-        if ($name !== '' && preg_match('/^[A-Za-z0-9][A-Za-z0-9._-]*\.sqlite$/', $name)) {
+        if ($name !== '' && $name !== 'blog.sqlite' && preg_match('/^blog-[a-f0-9]{16}\.sqlite$/', $name)) {
             return DATA_DIR . '/' . $name;
         }
     }
 
-    return DEFAULT_DB_FILE;
+    return '';
 }
 
 define('DB_FILE', db_file_path());
+
+function is_installed(): bool
+{
+    return is_file(INSTALL_LOCK_FILE) && DB_FILE !== '' && is_file(DB_FILE);
+}
 
 function ensure_runtime_dirs(): void
 {
@@ -244,6 +248,7 @@ function db(): PDO
         return $db;
     }
 
+    if (DB_FILE === '') { throw new RuntimeException('博客尚未安装或数据库配置无效。'); }
     ensure_runtime_dirs();
 
     $db = new PDO('sqlite:' . DB_FILE, null, null, [
@@ -3048,7 +3053,7 @@ function render_editor_page(?array $existing = null, array $form = [], array $er
     ]);
 }
 
-if (!is_file(INSTALL_LOCK_FILE)) {
+if (!is_installed()) {
     redirect_to(install_url());
 }
 
