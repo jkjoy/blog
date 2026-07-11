@@ -124,12 +124,19 @@ function ensure_schema(PDO $pdo): void
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             username TEXT NOT NULL UNIQUE,
             password_hash TEXT NOT NULL,
+            nickname TEXT NOT NULL DEFAULT '',
+            email TEXT NOT NULL DEFAULT '',
+            avatar_url TEXT NOT NULL DEFAULT '',
+            website_url TEXT NOT NULL DEFAULT '',
+            social_links TEXT NOT NULL DEFAULT '',
+            signature TEXT NOT NULL DEFAULT '',
             created_at INTEGER NOT NULL
         )"
     );
     $pdo->exec(
         "CREATE TABLE IF NOT EXISTS posts(
             id INTEGER PRIMARY KEY AUTOINCREMENT,
+            author_id INTEGER,
             category_id INTEGER,
             slug TEXT NOT NULL UNIQUE,
             title TEXT NOT NULL,
@@ -155,8 +162,39 @@ function ensure_schema(PDO $pdo): void
             updated_at INTEGER NOT NULL
         )"
     );
+    $pdo->exec(
+        "CREATE TABLE IF NOT EXISTS links(
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            name TEXT NOT NULL,
+            url TEXT NOT NULL,
+            icon_url TEXT NOT NULL DEFAULT '',
+            description TEXT NOT NULL DEFAULT '',
+            sort_order INTEGER NOT NULL DEFAULT 0,
+            created_at INTEGER NOT NULL,
+            updated_at INTEGER NOT NULL
+        )"
+    );
+    $pdo->exec(
+        "CREATE TABLE IF NOT EXISTS tag_meta(
+            label TEXT NOT NULL UNIQUE,
+            slug TEXT NOT NULL UNIQUE,
+            updated_at INTEGER NOT NULL
+        )"
+    );
 
     $columns = table_columns($pdo, 'posts');
+    $userColumns = table_columns($pdo, 'users');
+
+    foreach (['nickname', 'email', 'avatar_url', 'website_url', 'social_links', 'signature'] as $column) {
+        if (!isset($userColumns[$column])) { $pdo->exec("ALTER TABLE users ADD COLUMN {$column} TEXT NOT NULL DEFAULT ''"); }
+    }
+
+    $linkColumns = table_columns($pdo, 'links');
+    if (!isset($linkColumns['icon_url'])) { $pdo->exec("ALTER TABLE links ADD COLUMN icon_url TEXT NOT NULL DEFAULT ''"); }
+
+    if (!isset($columns['author_id'])) {
+        $pdo->exec("ALTER TABLE posts ADD COLUMN author_id INTEGER");
+    }
 
     if (!isset($columns['category_id'])) {
         $pdo->exec("ALTER TABLE posts ADD COLUMN category_id INTEGER");
@@ -177,10 +215,25 @@ function ensure_schema(PDO $pdo): void
     $pdo->exec("UPDATE posts SET kind = 'post' WHERE kind IS NULL OR trim(kind) = ''");
     $pdo->exec("UPDATE posts SET tags = '[]' WHERE tags IS NULL OR trim(tags) = ''");
     $pdo->exec("UPDATE posts SET views = 0 WHERE views IS NULL");
+    $defaultAuthorId = (int)($pdo->query('SELECT id FROM users ORDER BY id ASC LIMIT 1')->fetchColumn() ?: 0);
+    if ($defaultAuthorId > 0) {
+        $pdo->prepare('UPDATE posts SET author_id = ? WHERE author_id IS NULL OR author_id NOT IN (SELECT id FROM users)')->execute([$defaultAuthorId]);
+    }
     $pdo->exec('CREATE INDEX IF NOT EXISTS idx_posts_public ON posts(kind, status, published_at DESC, id DESC)');
     $pdo->exec('CREATE INDEX IF NOT EXISTS idx_posts_kind_updated ON posts(kind, updated_at DESC, id DESC)');
     $pdo->exec('CREATE INDEX IF NOT EXISTS idx_posts_category ON posts(category_id, kind, status, published_at DESC)');
     $pdo->exec('CREATE INDEX IF NOT EXISTS idx_categories_sort ON categories(sort_order ASC, id DESC)');
+    $pdo->exec('CREATE INDEX IF NOT EXISTS idx_links_sort ON links(sort_order ASC, id DESC)');
+
+    $defaultCategoryId = (int)($pdo->query("SELECT id FROM categories WHERE slug = 'default' ORDER BY id LIMIT 1")->fetchColumn() ?: 0);
+    if ($defaultCategoryId < 1) {
+        $now = time();
+        $statement = $pdo->prepare('INSERT INTO categories(name, slug, description, sort_order, created_at, updated_at) VALUES(?,?,?,?,?,?)');
+        $statement->execute(['默认分类', 'default', '系统默认文章分类。', 0, $now, $now]);
+        $defaultCategoryId = (int)$pdo->lastInsertId();
+    }
+    $statement = $pdo->prepare("UPDATE posts SET category_id = ? WHERE kind = 'post' AND (category_id IS NULL OR category_id NOT IN (SELECT id FROM categories))");
+    $statement->execute([$defaultCategoryId]);
 }
 
 function db(): PDO
@@ -243,13 +296,15 @@ function default_settings(): array
 {
     return [
         'site_name' => 'Simple PHP Blog',
-        'author_name' => 'Admin',
         'site_url' => '',
         'site_tagline' => 'A small PHP blog running on one main entry file.',
         'site_description' => 'A simple PHP + SQLite blog inspired by Hugo Paper.',
-        'home_intro' => '安静地写点东西，保留足够留白，让文章本身站到前面。',
+        'site_keywords' => '',
+        'ai_api_url' => 'https://api.deepseek.com',
+        'ai_api_key' => '',
+        'ai_model' => 'deepseek-v4-flash',
         'site_footer' => '',
-        'logo_url' => './logo.png',
+        'favicon_url' => 'logo.png',
         'footer_beian' => '',
         'posts_per_page' => '6',
         'pretty_url' => '0',
@@ -532,6 +587,11 @@ function apply_pretty_route(): void
         return;
     }
 
+    if (preg_match('#^/sitemap\.xml$#i', $path)) {
+        set_route_params(['a' => 'sitemap']);
+        return;
+    }
+
     if (preg_match('#^/page/(\d+)/?$#i', $path, $matches)) {
         set_route_params(['a' => 'home', 'p' => $matches[1]]);
         return;
@@ -539,6 +599,11 @@ function apply_pretty_route(): void
 
     if (preg_match('#^/tags/?$#i', $path)) {
         set_route_params(['a' => 'tags']);
+        return;
+    }
+
+    if (preg_match('#^/links/?$#i', $path)) {
+        set_route_params(['a' => 'links']);
         return;
     }
 
@@ -557,7 +622,7 @@ function apply_pretty_route(): void
         return;
     }
 
-    if (preg_match('#^/admin/(posts|categories|settings)/?$#i', $path, $matches)) {
+    if (preg_match('#^/admin/(posts|categories|tags|links|users|ai|settings)/?$#i', $path, $matches)) {
         set_route_params(['a' => 'admin_' . str_lower_u($matches[1])]);
         return;
     }
@@ -626,8 +691,10 @@ function url_for(string $route, array $params = []): string
     return match ($route) {
         'home' => $pretty ? app_path('/') : script_url(),
         'rss' => $pretty ? app_path('/rss.xml') : script_url() . '?a=rss',
+        'sitemap' => $pretty ? app_path('/sitemap.xml') : script_url() . '?a=sitemap',
         'archives' => $pretty ? app_path('/archives') : script_url() . '?a=archives',
         'tags' => $pretty ? app_path('/tags') : script_url() . '?a=tags',
+        'links' => $pretty ? app_path('/links') : script_url() . '?a=links',
         'tag' => $pretty ? app_path('/tag/' . rawurlencode((string)($params['slug'] ?? ''))) : script_url() . '?a=tag&slug=' . rawurlencode((string)($params['slug'] ?? '')),
         'page' => $pretty ? app_path('/' . rawurlencode((string)($params['slug'] ?? ''))) : script_url() . '?a=page&slug=' . rawurlencode((string)($params['slug'] ?? '')),
         'login' => $pretty ? app_path('/login') : script_url() . '?a=login',
@@ -635,13 +702,25 @@ function url_for(string $route, array $params = []): string
         'admin' => $pretty ? app_path('/admin') : script_url() . '?a=admin',
         'admin_posts' => $pretty ? app_path('/admin/posts') : script_url() . '?a=admin_posts',
         'admin_categories' => $pretty ? app_path('/admin/categories') : script_url() . '?a=admin_categories',
+        'admin_tags' => $pretty ? app_path('/admin/tags') : script_url() . '?a=admin_tags',
+        'admin_links' => $pretty ? app_path('/admin/links') : script_url() . '?a=admin_links',
+        'admin_users' => $pretty ? app_path('/admin/users') : script_url() . '?a=admin_users',
+        'admin_ai' => $pretty ? app_path('/admin/ai') : script_url() . '?a=admin_ai',
         'admin_settings' => $pretty ? app_path('/admin/settings') : script_url() . '?a=admin_settings',
         'write' => $pretty ? app_path('/write') : script_url() . '?a=write',
         'edit' => $pretty ? app_path('/edit/' . (int)($params['id'] ?? 0)) : script_url() . '?a=edit&id=' . (int)($params['id'] ?? 0),
         'post' => $pretty ? app_path('/post/' . rawurlencode((string)($params['slug'] ?? ''))) : script_url() . '?a=post&slug=' . rawurlencode((string)($params['slug'] ?? '')),
         'save_settings' => script_url() . '?a=save_settings',
+        'save_ai_settings' => script_url() . '?a=save_ai_settings',
+        'ai_generate' => script_url() . '?a=ai_generate',
         'save_category' => script_url() . '?a=save_category',
         'delete_category' => script_url() . '?a=delete_category',
+        'save_tag' => script_url() . '?a=save_tag',
+        'delete_tag' => script_url() . '?a=delete_tag',
+        'save_link' => script_url() . '?a=save_link',
+        'delete_link' => script_url() . '?a=delete_link',
+        'save_user' => script_url() . '?a=save_user',
+        'delete_user' => script_url() . '?a=delete_user',
         'upload_attachment' => script_url() . '?a=upload_attachment',
         'delete_post' => script_url() . '?a=delete_post',
         'change_status' => script_url() . '?a=change_status',
@@ -806,7 +885,7 @@ function tag_descriptors(array $post): array
     $tags = [];
 
     foreach (post_tags($post) as $label) {
-        $tags[] = ['label' => $label, 'slug' => slugify($label)];
+        $tags[] = ['label' => $label, 'slug' => tag_slug_for_label($label)];
     }
 
     return $tags;
@@ -887,6 +966,18 @@ function safe_link_url(string $url): string
     }
 
     return '#';
+}
+
+function tag_slug_for_label(string $label): string
+{
+    $stored = val('SELECT slug FROM tag_meta WHERE label = ?', [$label]);
+    if (is_string($stored) && $stored !== '') { return $stored; }
+    $base = slugify($label);
+    $slug = $base;
+    $suffix = 2;
+    while (one('SELECT label FROM tag_meta WHERE slug = ?', [$slug])) { $slug = $base . '-' . $suffix++; }
+    q('INSERT OR IGNORE INTO tag_meta(label, slug, updated_at) VALUES(?,?,?)', [$label, $slug, time()]);
+    return (string)(val('SELECT slug FROM tag_meta WHERE label = ?', [$label]) ?: $slug);
 }
 
 function render_inline(string $text): string
@@ -1272,20 +1363,20 @@ function archive_groups(): array
 
 function theme_logo_url(): string
 {
-    if (is_file(__DIR__ . '/logo.png')) {
-        return asset_url('logo.png');
-    }
+    return asset_url('logo.png');
+}
 
-    return trim(setting('logo_url', default_settings()['logo_url'])) ?: default_settings()['logo_url'];
+function theme_favicon_url(): string
+{
+    $value = trim(setting('favicon_url', default_settings()['favicon_url']));
+    if ($value === '') { $value = 'logo.png'; }
+    if (preg_match('#^https?://#i', $value) || str_starts_with($value, '/')) { return $value; }
+    return asset_url($value);
 }
 
 function public_quote(): string
 {
-    $quote = trim(setting('home_intro'));
-
-    if ($quote === '') {
-        $quote = trim(setting('site_tagline'));
-    }
+    $quote = trim(setting('site_tagline'));
 
     return $quote !== '' ? $quote : setting('site_name', default_settings()['site_name']);
 }
@@ -1393,14 +1484,16 @@ function fetch_feed_posts(int $limit = 20): array
     );
 }
 
-function tag_index_data(): array
+function tag_index_data(bool $publishedOnly = true): array
 {
     $map = [];
-    $posts = all_rows('SELECT * FROM posts WHERE kind = ? AND status = ? AND published_at <= ? ORDER BY published_at DESC, id DESC', ['post', 'published', time()]);
+    $posts = $publishedOnly
+        ? all_rows('SELECT * FROM posts WHERE kind = ? AND status = ? AND published_at <= ? ORDER BY published_at DESC, id DESC', ['post', 'published', time()])
+        : all_rows('SELECT * FROM posts WHERE kind = ? ORDER BY updated_at DESC, id DESC', ['post']);
 
     foreach ($posts as $post) {
         foreach (post_tags($post) as $label) {
-            $slug = slugify($label);
+            $slug = tag_slug_for_label($label);
             if (!isset($map[$slug])) {
                 $map[$slug] = ['slug' => $slug, 'label' => $label, 'count' => 0];
             }
@@ -1474,6 +1567,9 @@ function validate_post_input(array $input, ?array $existing = null): array
 
     $kind = $kind === 'page' ? 'page' : 'post';
     $categoryId = $kind === 'post' && $categoryId > 0 && one('SELECT id FROM categories WHERE id = ?', [$categoryId]) ? $categoryId : null;
+    if ($kind === 'post' && $categoryId === null) {
+        $errors[] = '文章必须选择一个分类。';
+    }
     $status = $status === 'published' ? 'published' : 'draft';
     $publishedAt = (int)($existing['published_at'] ?? 0);
 
@@ -1513,6 +1609,7 @@ function render_layout(string $title, string $content, array $options = []): voi
     $siteName = setting('site_name', default_settings()['site_name']);
     $fullTitle = $title === $siteName ? $siteName : $title . ' · ' . $siteName;
     $description = (string)($options['description'] ?? setting('site_description', setting('site_tagline')));
+    $keywords = trim(setting('site_keywords'));
     $active = (string)($options['active'] ?? '');
     $wide = !empty($options['wide']);
     $mode = (string)($options['mode'] ?? 'admin');
@@ -1534,66 +1631,50 @@ function render_layout(string $title, string $content, array $options = []): voi
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <meta name="description" content="<?= h($description) ?>">
+  <?php if ($keywords !== ''): ?><meta name="keywords" content="<?= h($keywords) ?>"><?php endif; ?>
   <title><?= h($fullTitle) ?></title>
+  <link rel="icon" href="<?= h(theme_favicon_url()) ?>">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@300;400;500;600;700&display=swap" rel="stylesheet">
   <link rel="stylesheet" href="<?= h(asset_url('index.css')) ?>?v=<?= h(APP_VERSION) ?>">
 </head>
 <body class="<?= h($bodyClass) ?>">
   <?php if ($mode === 'public'): ?>
-    <div class="main">
-      <div class="container">
-        <div class="header">
-          <div class="site-description">
-            <div class="site-intro">
-              <a class="site-avatar-link" href="<?= h(url_for('home')) ?>" aria-label="<?= h($siteName) ?>">
-                <img class="site-avatar" src="<?= h(theme_logo_url()) ?>" width="80" height="80" alt="<?= h($siteName) ?>">
-              </a>
-              <div class="site-copy">
-                <h2><span><?= h(public_quote()) ?></span></h2>
-              </div>
-            </div>
-            <nav class="nav social" aria-label="Quick links">
-              <ul class="flat">
-                <li>
-                  <a class="social-link<?= $active === 'rss' ? ' is-active' : '' ?>" href="<?= h(url_for('rss')) ?>" title="RSS" aria-label="RSS">
-                    <?= public_icon('rss') ?>
-                  </a>
-                </li>
-              </ul>
-            </nav>
-          </div>
-          <nav class="nav" aria-label="Primary">
-            <ul class="flat">
-              <li class="<?= $active === 'home' ? 'active' : '' ?>"><a href="<?= h(url_for('home')) ?>">首页</a></li>
-              <li class="<?= $active === 'tags' ? 'active' : '' ?>"><a href="<?= h(url_for('tags')) ?>">标签</a></li>
-              <li class="<?= $active === 'archives' ? 'active' : '' ?>"><a href="<?= h(url_for('archives')) ?>">归档</a></li>
-              <?php foreach ($navPages as $page): ?>
-                <li class="<?= $active === 'page:' . $page['slug'] ? 'active' : '' ?>">
-                  <a href="<?= h(content_permalink($page)) ?>"><?= h($page['title']) ?></a>
-                </li>
-              <?php endforeach; ?>
-            </ul>
-          </nav>
-        </div>
-
-        <?php if ($flash): ?>
-          <div class="flash flash--<?= h((string)$flash['type']) ?> flash--public"><?= h((string)$flash['message']) ?></div>
-        <?php endif; ?>
-
-        <?= $content ?>
-
-        <div class="footer">
-          <nav class="nav">
-            <?= h(site_footer_text()) ?><br>
-            <?php $beian = trim(setting('footer_beian')); ?>
-            <?php if ($beian !== ''): ?>
-              <a href="https://beian.miit.gov.cn/" target="_blank" rel="noopener noreferrer"><?= h($beian) ?></a><br>
-            <?php endif; ?>
-            <span>Powered by PHP + SQLite</span>
-          </nav>
-        </div>
-      </div>
+    <div class="crt-turn-on" id="turn-on"></div><div class="crt-vignette"></div><div class="scanlines" id="scanlines"></div><div class="crt-flicker"></div>
+    <div class="terminal" data-home="<?= h(url_for('home')) ?>" data-tags="<?= h(url_for('tags')) ?>" data-links="<?= h(url_for('links')) ?>" data-archives="<?= h(url_for('archives')) ?>">
+      <header class="terminal-header"><div class="window-controls"><span class="dot red"></span><span class="dot yellow"></span><span class="dot green"></span></div><div class="title">visitor@<?= h($siteName) ?>: ~ — devlog-sh 0.9</div><div class="info"><span class="signal"></span><span id="term-info">80×24</span></div></header>
+      <main class="output" id="output" aria-live="polite">
+        <div class="boot-banner"><b><?= h($siteName) ?> <?= h(APP_VERSION) ?> — <?= h(public_quote()) ?></b><br><span>type "help" to begin · type "ls" to look around</span></div>
+        <nav class="terminal-menu" aria-label="主菜单">
+          <span class="terminal-menu__label">menu:</span>
+          <a class="<?= $active === 'home' ? 'is-active' : '' ?>" href="<?= h(url_for('home')) ?>">[首页]</a>
+          <a class="<?= $active === 'tags' ? 'is-active' : '' ?>" href="<?= h(url_for('tags')) ?>">[标签]</a>
+          <a class="<?= $active === 'archives' ? 'is-active' : '' ?>" href="<?= h(url_for('archives')) ?>">[归档]</a>
+          <a class="<?= $active === 'links' ? 'is-active' : '' ?>" href="<?= h(url_for('links')) ?>">[链接]</a>
+          <?php foreach ($navPages as $page): ?>
+            <a class="<?= $active === 'page:' . $page['slug'] ? 'is-active' : '' ?>" href="<?= h(content_permalink($page)) ?>">[<?= h($page['title']) ?>]</a>
+          <?php endforeach; ?>
+        </nav>
+        <div class="cmd-echo"><span class="prompt-part">visitor@<?= h($siteName) ?></span><span class="path-part">:~</span>$ cat <?= h(strtolower(str_replace(' ', '-', $title))) ?>.md</div>
+        <?php if ($flash): ?><div class="line amber"><?= h((string)$flash['message']) ?></div><?php endif; ?>
+        <section class="md-content"><?= $content ?></section>
+        <div class="line dim">-- EOF --</div>
+        <footer class="terminal-footer">
+          <span><?= h(site_footer_text()) ?></span>
+          <?php $beian = trim(setting('footer_beian')); ?>
+          <?php if ($beian !== ''): ?>
+            <span class="terminal-footer__separator">·</span>
+            <a href="https://beian.miit.gov.cn/" target="_blank" rel="noopener noreferrer"><?= h($beian) ?></a>
+          <?php endif; ?>
+          <span class="terminal-footer__separator">·</span>
+          <a href="<?= h(url_for('rss')) ?>">RSS</a>
+          <span class="terminal-footer__separator">·</span>
+          <a href="<?= h(url_for('sitemap')) ?>">Sitemap</a>
+        </footer>
+      </main>
+      <footer class="prompt-line"><span class="prompt"><span>visitor@<?= h($siteName) ?></span><span class="path" id="prompt-path">:~</span><span class="symbol">$</span>&nbsp;</span><span class="input-text" id="input-text"></span><span class="cursor"></span><span class="ghost-text" id="ghost-text"></span><input id="input" type="text" autofocus autocomplete="off" spellcheck="false" aria-label="Terminal input"></footer>
     </div>
-    <a id="to_top" href="#" class="to_top" aria-label="回到顶部"><?= public_icon('arrow-up') ?></a>
   <?php else: ?>
     <div class="site-frame">
       <header class="site-header">
@@ -1650,6 +1731,10 @@ function admin_icon(string $name): string
         'write' => '<path d="M12 20h9"></path><path d="M16.5 3.5a2.1 2.1 0 0 1 3 3L7 19l-4 1 1-4 12.5-12.5z"></path>',
         'posts' => '<path d="M8 6h13"></path><path d="M8 12h13"></path><path d="M8 18h13"></path><path d="M3 6h.01"></path><path d="M3 12h.01"></path><path d="M3 18h.01"></path>',
         'categories' => '<path d="M3 6h7l2 2h9v10a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V6z"></path>',
+        'tags' => '<path d="M12.6 2.6H5a2.4 2.4 0 0 0-2.4 2.4v7.6a2.4 2.4 0 0 0 .7 1.7l6.4 6.4a2.4 2.4 0 0 0 3.4 0l7.6-7.6a2.4 2.4 0 0 0 0-3.4l-6.4-6.4a2.4 2.4 0 0 0-1.7-.7z"></path><circle cx="8" cy="8" r="1"></circle>',
+        'links' => '<path d="M10 13a5 5 0 0 0 7.5.5l2-2a5 5 0 0 0-7.1-7.1l-1.1 1.1"></path><path d="M14 11a5 5 0 0 0-7.5-.5l-2 2a5 5 0 0 0 7.1 7.1l1.1-1.1"></path>',
+        'users' => '<path d="M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2"></path><circle cx="9" cy="7" r="4"></circle><path d="M22 21v-2a4 4 0 0 0-3-3.87"></path><path d="M16 3.13a4 4 0 0 1 0 7.75"></path>',
+        'ai' => '<path d="m12 3-1.4 3.6L7 8l3.6 1.4L12 13l1.4-3.6L17 8l-3.6-1.4L12 3z"></path><path d="m5 14-.8 2.2L2 17l2.2.8L5 20l.8-2.2L8 17l-2.2-.8L5 14z"></path><path d="m19 13-1 2.5-2.5 1 2.5 1L19 20l1-2.5 2.5-1-2.5-1L19 13z"></path>',
         'settings' => '<path d="M12 15.5A3.5 3.5 0 1 0 12 8a3.5 3.5 0 0 0 0 7.5z"></path><path d="M19.4 15a1.7 1.7 0 0 0 .3 1.9l.1.1a2 2 0 1 1-2.8 2.8l-.1-.1a1.7 1.7 0 0 0-1.9-.3 1.7 1.7 0 0 0-1 1.5V21a2 2 0 1 1-4 0v-.1a1.7 1.7 0 0 0-1-1.5 1.7 1.7 0 0 0-1.9.3l-.1.1A2 2 0 1 1 4.2 17l.1-.1a1.7 1.7 0 0 0 .3-1.9 1.7 1.7 0 0 0-1.5-1H3a2 2 0 1 1 0-4h.1a1.7 1.7 0 0 0 1.5-1 1.7 1.7 0 0 0-.3-1.9L4.2 7A2 2 0 1 1 7 4.2l.1.1a1.7 1.7 0 0 0 1.9.3h.1a1.7 1.7 0 0 0 1-1.5V3a2 2 0 1 1 4 0v.1a1.7 1.7 0 0 0 1 1.5h.1a1.7 1.7 0 0 0 1.9-.3l.1-.1A2 2 0 1 1 19.8 7l-.1.1a1.7 1.7 0 0 0-.3 1.9v.1a1.7 1.7 0 0 0 1.5 1h.1a2 2 0 1 1 0 4h-.1a1.7 1.7 0 0 0-1.5 1z"></path>',
         default => '<circle cx="12" cy="12" r="8"></circle>',
     };
@@ -1693,11 +1778,39 @@ function render_admin_sidebar(string $active, array $summary = []): string
             'active' => $active === 'categories',
         ],
         [
+            'label' => '标签管理',
+            'icon' => 'tags',
+            'note' => '重命名与清理',
+            'href' => url_for('admin_tags'),
+            'active' => $active === 'tags',
+        ],
+        [
+            'label' => '友情链接',
+            'icon' => 'links',
+            'note' => '添加、排序与维护',
+            'href' => url_for('admin_links'),
+            'active' => $active === 'links',
+        ],
+        [
+            'label' => 'AI 设置',
+            'icon' => 'ai',
+            'note' => '模型与接口',
+            'href' => url_for('admin_ai'),
+            'active' => $active === 'ai',
+        ],
+        [
             'label' => '站点设置',
             'icon' => 'settings',
             'note' => '基础配置',
             'href' => url_for('admin_settings'),
             'active' => $active === 'settings',
+        ],
+        [
+            'label' => '用户管理',
+            'icon' => 'users',
+            'note' => '管理员账号',
+            'href' => url_for('admin_users'),
+            'active' => $active === 'users',
         ],
     ];
 
@@ -1794,7 +1907,7 @@ function simple_error_page(string $title, string $message, int $status = 400): v
     ]);
 }
 
-function render_tag_chips(array $post, string $class = 'tag-list'): string
+function render_tag_chips(array $post, string $class = 'post-tag-list'): string
 {
     $tags = tag_descriptors($post);
     if ($tags === []) {
@@ -1805,7 +1918,7 @@ function render_tag_chips(array $post, string $class = 'tag-list'): string
     ?>
     <div class="<?= h($class) ?>">
       <?php foreach ($tags as $tag): ?>
-        <a class="tag-chip" href="<?= h(url_for('tag', ['slug' => $tag['slug']])) ?>"><?= h($tag['label']) ?></a>
+        <a class="post-tag" href="<?= h(url_for('tag', ['slug' => $tag['slug']])) ?>">#<?= h($tag['label']) ?></a>
       <?php endforeach; ?>
     </div>
     <?php
@@ -1832,9 +1945,6 @@ function render_home(int $page): void
     <?php if ($posts): ?>
       <article>
         <div class="recent-posts section">
-          <h2 class="section-header">
-            随笔<?= public_icon('pen') ?>
-          </h2>
           <?= render_public_post_list($posts) ?>
         </div>
       </article>
@@ -1917,7 +2027,10 @@ function render_post_page(array $post): void
 
     $neighbors = post_neighbors($post);
     $state = post_state($post);
-    $author = setting('author_name', 'Admin');
+    $authorProfile = one('SELECT username, nickname FROM users WHERE id = ?', [(int)($post['author_id'] ?? 0)]);
+    $author = trim((string)($authorProfile['nickname'] ?? '')) ?: (string)($authorProfile['username'] ?? 'Admin');
+    $categoryName = category_name(isset($post['category_id']) ? (int)$post['category_id'] : null);
+    $viewCount = (int)val('SELECT views FROM posts WHERE id = ?', [(int)$post['id']]);
     $displayTime = (int)($post['published_at'] ?: $post['updated_at'] ?: $post['created_at']);
     $tagsMarkup = render_tag_chips($post);
 
@@ -1928,6 +2041,8 @@ function render_post_page(array $post): void
       <div class="meta">
         <span><?= h(date('F j, Y', $displayTime)) ?></span>
         <span>作者: <?= h($author) ?></span>
+        <span>分类: <?= h($categoryName) ?></span>
+        <span>浏览: <?= h((string)$viewCount) ?></span>
         <?php if (!is_live_post($post) && is_admin()): ?>
           <span><?= h($state['label']) ?>预览</span>
         <?php endif; ?>
@@ -2012,7 +2127,7 @@ function render_tags_index(): void
       <div class="post-content">
         <div class="tag-cloud">
           <?php foreach ($tags as $tag): ?>
-            <a class="tag-chip tag-chip--count" href="<?= h(url_for('tag', ['slug' => $tag['slug']])) ?>">
+            <a class="tag-index-link" href="<?= h(url_for('tag', ['slug' => $tag['slug']])) ?>">
               <span>#<?= h($tag['label']) ?></span>
               <strong><?= h((string)$tag['count']) ?></strong>
             </a>
@@ -2215,6 +2330,83 @@ function render_admin_page(): void
     ]);
 }
 
+function render_sitemap(): void
+{
+    $now = time();
+    $rows = all_rows(
+        'SELECT slug, kind, updated_at, published_at FROM posts WHERE status = ? AND published_at <= ? ORDER BY updated_at DESC',
+        ['published', $now]
+    );
+    $signature = (string)($rows[0]['updated_at'] ?? 0) . ':' . count($rows) . ':' . (string)val('SELECT COALESCE(MAX(updated_at), 0) FROM tag_meta');
+    $etag = '"' . sha1($signature) . '"';
+    header('Content-Type: application/xml; charset=UTF-8');
+    header('Cache-Control: public, max-age=900, stale-while-revalidate=3600');
+    header('ETag: ' . $etag);
+    if (trim((string)($_SERVER['HTTP_IF_NONE_MATCH'] ?? '')) === $etag) {
+        http_response_code(304);
+        exit;
+    }
+
+    $urls = [];
+    $add = static function (string $url, int $updatedAt = 0, string $priority = '0.6') use (&$urls): void {
+        $urls[$url] = ['url' => absolute_url($url), 'updated_at' => $updatedAt, 'priority' => $priority];
+    };
+    $add(url_for('home'), $now, '1.0');
+    $add(url_for('archives'), $now, '0.7');
+    $add(url_for('tags'), $now, '0.7');
+    $add(url_for('links'), $now, '0.5');
+    foreach ($rows as $row) {
+        $route = (string)$row['kind'] === 'page' ? 'page' : 'post';
+        $add(url_for($route, ['slug' => (string)$row['slug']]), (int)$row['updated_at'], $route === 'post' ? '0.8' : '0.6');
+    }
+    foreach (tag_index_data() as $tag) {
+        $add(url_for('tag', ['slug' => (string)$tag['slug']]), $now, '0.5');
+    }
+
+    echo '<?xml version="1.0" encoding="UTF-8"?>' . "\n";
+    echo '<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">' . "\n";
+    foreach ($urls as $item) {
+        echo "  <url>\n";
+        echo '    <loc>' . x((string)$item['url']) . "</loc>\n";
+        if ((int)$item['updated_at'] > 0) { echo '    <lastmod>' . gmdate('Y-m-d\TH:i:s\Z', (int)$item['updated_at']) . "</lastmod>\n"; }
+        echo '    <priority>' . x((string)$item['priority']) . "</priority>\n";
+        echo "  </url>\n";
+    }
+    echo '</urlset>';
+    exit;
+}
+
+function render_links_page(): void
+{
+    $links = all_rows('SELECT * FROM links ORDER BY sort_order ASC, id DESC');
+    ob_start();
+    ?>
+    <article class="links-page">
+      <h1 class="post-title">链接</h1>
+      <p class="meta">一些值得访问的网站与朋友。</p>
+      <?php if ($links): ?>
+        <div class="friend-links">
+          <?php foreach ($links as $link): ?>
+            <?php $host = (string)(parse_url((string)$link['url'], PHP_URL_HOST) ?: $link['url']); ?>
+            <a class="friend-link" href="<?= h((string)$link['url']) ?>" target="_blank" rel="noopener noreferrer">
+              <span class="friend-link__head"><?php if (trim((string)$link['icon_url']) !== ''): ?><img src="<?= h((string)$link['icon_url']) ?>" width="24" height="24" alt=""><?php endif; ?><strong><?= h((string)$link['name']) ?></strong></span>
+              <?php if (trim((string)$link['description']) !== ''): ?><span><?= h((string)$link['description']) ?></span><?php endif; ?>
+              <small><?= h($host) ?> ↗</small>
+            </a>
+          <?php endforeach; ?>
+        </div>
+      <?php else: ?>
+        <div class="empty-notice"><p>还没有添加友情链接。</p></div>
+      <?php endif; ?>
+    </article>
+    <?php
+    render_layout('链接', (string)ob_get_clean(), [
+        'active' => 'links',
+        'mode' => 'public',
+        'description' => '友情链接',
+    ]);
+}
+
 function render_admin_posts_page(): void
 {
     require_admin();
@@ -2368,7 +2560,7 @@ function render_admin_categories_page(array $form = [], array $errors = []): voi
                         <td>
                           <div class="table-actions">
                             <a class="button button--ghost" href="<?= h(url_with_query(url_for('admin_categories'), ['id' => (int)$category['id']])) ?>">编辑</a>
-                            <form method="post" action="<?= h(url_for('delete_category')) ?>" onsubmit="return confirm('确定删除这个分类吗？分类下文章会变为未分类。');">
+                            <form method="post" action="<?= h(url_for('delete_category')) ?>" onsubmit="return confirm('确定删除这个空分类吗？');">
                               <?= csrf_field() ?>
                               <input type="hidden" name="id" value="<?= h($category['id']) ?>">
                               <button class="button button--danger" type="submit">删除</button>
@@ -2441,6 +2633,95 @@ function render_admin_categories_page(array $form = [], array $errors = []): voi
     ]);
 }
 
+function render_admin_links_page(array $form = [], array $errors = []): void
+{
+    require_admin();
+    $links = all_rows('SELECT * FROM links ORDER BY sort_order ASC, id DESC');
+    $id = (int)($_GET['id'] ?? $form['id'] ?? 0);
+    $editing = $id > 0 ? one('SELECT * FROM links WHERE id = ?', [$id]) : null;
+    $values = array_merge([
+        'id' => (string)($editing['id'] ?? ''), 'name' => (string)($editing['name'] ?? ''),
+        'url' => (string)($editing['url'] ?? ''), 'icon_url' => (string)($editing['icon_url'] ?? ''), 'description' => (string)($editing['description'] ?? ''),
+        'sort_order' => (string)($editing['sort_order'] ?? '0'),
+    ], $form);
+    $sidebar = render_admin_sidebar('links');
+    ob_start();
+    ?>
+    <div class="admin-shell"><?= $sidebar ?><div class="admin-main">
+      <?= render_admin_topbar('友情链接') ?>
+      <div class="admin-grid admin-grid--split">
+        <section class="panel admin-list-panel"><div class="panel__header"><h2>链接列表</h2><p class="panel__meta">排序数字越小越靠前。</p></div><div class="panel__body panel__body--flush">
+          <?php if ($links): ?><div class="table-wrap"><table class="admin-table"><thead><tr><th>名称</th><th>网址</th><th>排序</th><th>操作</th></tr></thead><tbody>
+          <?php foreach ($links as $link): ?><tr><td><div class="table-title"><strong><?= h((string)$link['name']) ?></strong><span><?= h((string)$link['description']) ?></span></div></td><td><a href="<?= h((string)$link['url']) ?>" target="_blank" rel="noopener noreferrer"><?= h((string)$link['url']) ?></a></td><td><?= h((string)$link['sort_order']) ?></td><td><div class="table-actions"><a class="button button--ghost" href="<?= h(url_with_query(url_for('admin_links'), ['id' => (int)$link['id']])) ?>">编辑</a><form method="post" action="<?= h(url_for('delete_link')) ?>" onsubmit="return confirm('确定删除这个链接吗？');"><?= csrf_field() ?><input type="hidden" name="id" value="<?= h($link['id']) ?>"><button class="button button--danger" type="submit">删除</button></form></div></td></tr><?php endforeach; ?>
+          </tbody></table></div><?php else: ?><div class="empty-state empty-state--inside"><p>还没有友情链接。</p></div><?php endif; ?>
+        </div></section>
+        <section class="panel admin-list-panel"><div class="panel__header"><h2><?= $editing ? '编辑链接' : '添加链接' ?></h2></div><div class="panel__body">
+          <?php if ($errors): ?><div class="flash flash--error"><?= h(implode(' ', $errors)) ?></div><?php endif; ?>
+          <form class="form-stack" method="post" action="<?= h(url_for('save_link')) ?>"><?= csrf_field() ?><input type="hidden" name="id" value="<?= h((string)$values['id']) ?>">
+            <div class="field"><label for="link_name">网站名称</label><input id="link_name" name="name" value="<?= h((string)$values['name']) ?>" required></div>
+            <div class="field"><label for="link_url">网站地址</label><input id="link_url" name="url" type="url" value="<?= h((string)$values['url']) ?>" placeholder="https://example.com" required></div>
+            <div class="field"><label for="link_icon_url">网站图标地址</label><input id="link_icon_url" name="icon_url" type="url" value="<?= h((string)$values['icon_url']) ?>" placeholder="https://example.com/favicon.ico"></div>
+            <div class="field"><label for="link_description">简短描述</label><textarea id="link_description" name="description" rows="3"><?= h((string)$values['description']) ?></textarea></div>
+            <div class="field"><label for="link_sort">排序</label><input id="link_sort" name="sort_order" type="number" value="<?= h((string)$values['sort_order']) ?>"></div>
+            <div class="action-row"><?php if ($editing): ?><a class="button button--secondary" href="<?= h(url_for('admin_links')) ?>">取消编辑</a><?php endif; ?><button class="button" type="submit"><?= $editing ? '保存修改' : '添加链接' ?></button></div>
+          </form>
+        </div></section>
+      </div>
+    </div></div>
+    <?php
+    render_layout('友情链接', (string)ob_get_clean(), ['active' => 'links', 'wide' => true, 'description' => '友情链接管理']);
+}
+
+function replace_tag_everywhere(string $old, ?string $new): void
+{
+    foreach (all_rows('SELECT id, tags FROM posts') as $post) {
+        $tags = post_tags($post);
+        $changed = false;
+        $result = [];
+        foreach ($tags as $tag) {
+            if (str_lower_u($tag) === str_lower_u($old)) {
+                $changed = true;
+                if ($new !== null && $new !== '') { $result[] = $new; }
+            } else { $result[] = $tag; }
+        }
+        if ($changed) { q('UPDATE posts SET tags = ?, updated_at = ? WHERE id = ?', [encode_tags(parse_tags_input(implode(',', $result))), time(), (int)$post['id']]); }
+    }
+}
+
+function render_admin_tags_page(array $form = [], array $errors = []): void
+{
+    require_admin();
+    $tags = tag_index_data(false);
+    $old = trim((string)($_GET['tag'] ?? $form['old_tag'] ?? ''));
+    $currentSlug = $old !== '' ? tag_slug_for_label($old) : '';
+    $sidebar = render_admin_sidebar('tags');
+    ob_start(); ?>
+    <div class="admin-shell"><?= $sidebar ?><div class="admin-main"><?= render_admin_topbar('标签管理') ?><div class="admin-grid admin-grid--split">
+      <section class="panel admin-list-panel"><div class="panel__header"><h2>标签列表</h2><p class="panel__meta">标签来自文章内容，共 <?= h((string)count($tags)) ?> 个。</p></div><div class="panel__body panel__body--flush">
+      <?php if ($tags): ?><form method="post" action="<?= h(url_for('delete_tag')) ?>" onsubmit="return confirm('确定删除选中的标签吗？文章本身不会被删除。');"><?= csrf_field() ?><div class="table-wrap"><table class="admin-table"><thead><tr><th><input type="checkbox" aria-label="全选" data-check-all="tag_ids[]"></th><th>标签</th><th>Slug</th><th>文章数</th><th>操作</th></tr></thead><tbody><?php foreach ($tags as $tag): ?><tr><td><input type="checkbox" name="tag_ids[]" value="<?= h((string)$tag['label']) ?>" aria-label="选择 <?= h((string)$tag['label']) ?>"></td><td><strong>#<?= h((string)$tag['label']) ?></strong></td><td><?= h((string)$tag['slug']) ?></td><td><?= h((string)$tag['count']) ?></td><td><a class="button button--ghost" href="<?= h(url_with_query(url_for('admin_tags'), ['tag' => (string)$tag['label']])) ?>">修改</a></td></tr><?php endforeach; ?></tbody></table></div><div class="panel__body"><button class="button button--danger" type="submit">批量删除</button></div></form><?php else: ?><div class="empty-state empty-state--inside"><p>还没有标签。</p></div><?php endif; ?>
+      </div></section>
+      <section class="panel admin-list-panel"><div class="panel__header"><h2>修改标签</h2></div><div class="panel__body"><?php if ($errors): ?><div class="flash flash--error"><?= h(implode(' ', $errors)) ?></div><?php endif; ?><form class="form-stack" method="post" action="<?= h(url_for('save_tag')) ?>"><?= csrf_field() ?><div class="field"><label>原标签</label><input name="old_tag" value="<?= h($old) ?>" readonly required></div><div class="field"><label>标签名称</label><input name="new_tag" value="<?= h((string)($form['new_tag'] ?? $old)) ?>" required></div><div class="field"><label>Slug</label><input name="tag_slug" value="<?= h((string)($form['tag_slug'] ?? $currentSlug)) ?>" pattern="[a-z0-9]+(?:-[a-z0-9]+)*" required><p class="field-hint">仅使用小写字母、数字和连字符。</p></div><div class="action-row"><button class="button">保存修改</button></div></form></div></section>
+    </div></div></div><?php
+    render_layout('标签管理', (string)ob_get_clean(), ['active' => 'tags', 'wide' => true, 'description' => '标签管理']);
+}
+
+function render_admin_users_page(array $form = [], array $errors = []): void
+{
+    require_admin();
+    $users = all_rows('SELECT * FROM users ORDER BY id ASC');
+    $id = (int)($_GET['id'] ?? $form['id'] ?? 0);
+    $editing = $id > 0 ? one('SELECT * FROM users WHERE id = ?', [$id]) : null;
+    $username = (string)($form['username'] ?? $editing['username'] ?? '');
+    $profile = array_merge(['nickname' => '', 'email' => '', 'avatar_url' => '', 'website_url' => '', 'social_links' => '', 'signature' => ''], $editing ?: [], $form);
+    $sidebar = render_admin_sidebar('users');
+    ob_start(); ?>
+    <div class="admin-shell"><?= $sidebar ?><div class="admin-main"><?= render_admin_topbar('用户管理') ?><div class="admin-grid admin-grid--split">
+      <section class="panel admin-list-panel"><div class="panel__header"><h2>管理员账号</h2><p class="panel__meta">系统至少保留一个管理员。</p></div><div class="panel__body panel__body--flush"><div class="table-wrap"><table class="admin-table"><thead><tr><th>用户</th><th>邮箱</th><th>创建时间</th><th>操作</th></tr></thead><tbody><?php foreach ($users as $user): ?><tr><td><div class="table-title"><strong><?= h((string)($user['nickname'] ?: $user['username'])) ?></strong><span>@<?= h((string)$user['username']) ?><?= (int)$user['id'] === (int)(current_admin()['id'] ?? 0) ? '（当前）' : '' ?></span></div></td><td><?= h((string)$user['email']) ?></td><td><?= h(pretty_date((int)$user['created_at'], true)) ?></td><td><div class="table-actions"><a class="button button--ghost" href="<?= h(url_with_query(url_for('admin_users'), ['id' => (int)$user['id']])) ?>">编辑</a><?php if ((int)$user['id'] !== (int)(current_admin()['id'] ?? 0)): ?><form method="post" action="<?= h(url_for('delete_user')) ?>" onsubmit="return confirm('确定删除这个管理员吗？');"><?= csrf_field() ?><input type="hidden" name="id" value="<?= h($user['id']) ?>"><button class="button button--danger">删除</button></form><?php endif; ?></div></td></tr><?php endforeach; ?></tbody></table></div></div></section>
+      <section class="panel admin-list-panel"><div class="panel__header"><h2><?= $editing ? '编辑用户' : '添加用户' ?></h2></div><div class="panel__body"><?php if ($errors): ?><div class="flash flash--error"><?= h(implode(' ', $errors)) ?></div><?php endif; ?><form class="form-stack" method="post" action="<?= h(url_for('save_user')) ?>"><?= csrf_field() ?><input type="hidden" name="id" value="<?= h((string)$id) ?>"><div class="field-grid"><div class="field"><label>用户名</label><input name="username" value="<?= h($username) ?>" required></div><div class="field"><label>昵称</label><input name="nickname" value="<?= h((string)$profile['nickname']) ?>" required></div></div><div class="field"><label>密码<?= $editing ? '（留空则不修改）' : '' ?></label><input name="password" type="password"<?= $editing ? '' : ' required' ?> minlength="8"></div><div class="field"><label>个人签名档</label><textarea name="signature" rows="3" placeholder="一句话介绍自己"><?= h((string)$profile['signature']) ?></textarea></div><div class="field"><label>邮箱地址</label><input name="email" type="email" value="<?= h((string)$profile['email']) ?>"></div><div class="field"><label>头像地址</label><input name="avatar_url" type="url" value="<?= h((string)$profile['avatar_url']) ?>" placeholder="https://example.com/avatar.jpg"></div><div class="field"><label>网站地址</label><input name="website_url" type="url" value="<?= h((string)$profile['website_url']) ?>" placeholder="https://example.com"></div><div class="field"><label>社交媒体</label><textarea name="social_links" rows="4" placeholder="每行填写一个完整链接"><?= h((string)$profile['social_links']) ?></textarea></div><div class="action-row"><?php if ($editing): ?><a class="button button--secondary" href="<?= h(url_for('admin_users')) ?>">取消编辑</a><?php endif; ?><button class="button"><?= $editing ? '保存修改' : '添加用户' ?></button></div></form></div></section>
+    </div></div></div><?php
+    render_layout('用户管理', (string)ob_get_clean(), ['active' => 'users', 'wide' => true, 'description' => '用户管理']);
+}
+
 function render_admin_settings_page(): void
 {
     require_admin();
@@ -2464,60 +2745,43 @@ function render_admin_settings_page(): void
           <div class="panel__body">
             <form class="form-stack" method="post" action="<?= h(url_for('save_settings')) ?>">
               <?= csrf_field() ?>
-              <div class="field-grid">
-                <div class="field">
-                  <label for="site_name">站点名称</label>
-                  <input id="site_name" name="site_name" type="text" value="<?= h(setting('site_name')) ?>" required>
-                </div>
-                <div class="field">
-                  <label for="author_name">作者名</label>
-                  <input id="author_name" name="author_name" type="text" value="<?= h(setting('author_name')) ?>" required>
-                </div>
-              </div>
+              <div class="field"><label for="site_name">站点名称</label><input id="site_name" name="site_name" type="text" value="<?= h(setting('site_name')) ?>" required></div>
+              <div class="field"><label for="site_tagline">首页副标题</label><input id="site_tagline" name="site_tagline" type="text" value="<?= h(setting('site_tagline')) ?>"></div>
+              <div class="field"><label for="site_description">站点描述</label><textarea id="site_description" name="site_description" rows="3"><?= h(setting('site_description')) ?></textarea></div>
+              <div class="field"><label for="site_keywords">站点关键字</label><input id="site_keywords" name="site_keywords" value="<?= h(setting('site_keywords')) ?>" placeholder="PHP, SQLite, 博客"><p class="field-hint">使用英文逗号分隔，页面将输出为 SEO keywords 元信息。</p></div>
               <div class="field">
                 <label for="site_url">站点地址</label>
                 <input id="site_url" name="site_url" type="url" value="<?= h(setting('site_url')) ?>" placeholder="https://example.com/blog">
                 <p class="field-hint">RSS 会优先使用这里的绝对地址，子目录部署时请带上完整路径。</p>
               </div>
-              <div class="field">
-                <label>顶部 Logo</label>
-                <div class="settings-logo">
-                  <img class="settings-logo__preview" src="<?= h(theme_logo_url()) ?>" width="56" height="56" alt="<?= h($siteName) ?>">
-                  <div class="settings-logo__copy">
-                    <strong>logo.png</strong>
-                    <p class="field-hint">后台和前台顶部统一读取项目根目录下的本地文件 `logo.png`。</p>
-                  </div>
-                </div>
-              </div>
+              <div class="field"><label for="favicon_url">Favicon 地址</label><input id="favicon_url" name="favicon_url" value="<?= h(setting('favicon_url', 'logo.png')) ?>" placeholder="logo.png"><p class="field-hint">默认使用项目根目录的 logo.png，也可以填写完整图片 URL 或站内绝对路径。</p></div>
               <div class="field">
                 <label for="footer_beian">备案号</label>
                 <input id="footer_beian" name="footer_beian" type="text" value="<?= h(setting('footer_beian')) ?>" placeholder="京 ICP 备 12345678 号">
               </div>
-              <div class="field-grid">
-                <div class="field">
-                  <label for="posts_per_page">首页每页文章数</label>
-                  <input id="posts_per_page" name="posts_per_page" type="number" min="1" max="24" value="<?= h(setting('posts_per_page', '6')) ?>">
-                </div>
-                <div class="field">
+              <div class="field">
+                <label for="posts_per_page">首页每页文章数</label>
+                <input id="posts_per_page" name="posts_per_page" type="number" min="1" max="24" value="<?= h(setting('posts_per_page', '6')) ?>">
+              </div>
+              <div class="field">
                   <label for="pretty_url">伪静态 URL</label>
                   <select id="pretty_url" name="pretty_url">
                     <option value="0"<?= setting('pretty_url', '0') === '0' ? ' selected' : '' ?>>关闭</option>
                     <option value="1"<?= setting('pretty_url', '0') === '1' ? ' selected' : '' ?>>开启</option>
                   </select>
                   <p class="field-hint">开启后链接会变成 `/post/slug` 这类路径，需要服务器 rewrite 支持。</p>
-                </div>
-              </div>
-              <div class="field">
-                <label for="site_tagline">首页副标题</label>
-                <input id="site_tagline" name="site_tagline" type="text" value="<?= h(setting('site_tagline')) ?>">
-              </div>
-              <div class="field">
-                <label for="site_description">站点描述</label>
-                <textarea id="site_description" name="site_description" rows="3"><?= h(setting('site_description')) ?></textarea>
-              </div>
-              <div class="field">
-                <label for="home_intro">头部一句话</label>
-                <textarea id="home_intro" name="home_intro" rows="4"><?= h(setting('home_intro')) ?></textarea>
+                  <div class="rewrite-help" data-rewrite-help<?= setting('pretty_url', '0') === '1' ? '' : ' hidden' ?>>
+                    <strong>Apache</strong>
+                    <p>启用 <code>mod_rewrite</code>，并为当前目录设置 <code>AllowOverride All</code>。项目根目录已有可直接使用的 <code>.htaccess</code>。</p>
+                    <strong>Nginx</strong>
+                    <pre><code>location ^~ /data/ { deny all; }
+location ^~ /cache/ { deny all; }
+
+location / {
+    try_files $uri $uri/ /index.php?$query_string;
+}</code></pre>
+                    <p>若博客安装在子目录，请把 <code>/index.php</code> 改为包含子目录的入口路径，例如 <code>/blog/index.php</code>。</p>
+                  </div>
               </div>
               <div class="field">
                 <label for="site_footer">页脚文案</label>
@@ -2545,9 +2809,11 @@ function render_editor_page(?array $existing = null, array $form = [], array $er
 {
     require_admin();
 
+    $categories = category_options();
+    $defaultCategoryId = $categories ? (string)$categories[0]['id'] : '';
     $defaults = [
         'kind' => (string)($existing['kind'] ?? 'post'),
-        'category_id' => (string)($existing['category_id'] ?? ''),
+        'category_id' => (string)($existing['category_id'] ?? $defaultCategoryId),
         'title' => (string)($existing['title'] ?? ''),
         'slug' => (string)($existing['slug'] ?? ''),
         'tags_input' => implode(', ', post_tags($existing ?? [])),
@@ -2560,7 +2826,6 @@ function render_editor_page(?array $existing = null, array $form = [], array $er
     $values = array_merge($defaults, $form);
     $isEdit = $existing !== null;
     $siteName = setting('site_name', default_settings()['site_name']);
-    $categories = category_options();
     $sidebar = render_admin_sidebar($isEdit ? 'edit' : 'write', [
         'title' => '写作提示',
         'items' => [
@@ -2623,8 +2888,8 @@ function render_editor_page(?array $existing = null, array $form = [], array $er
                 </div>
                 <div class="field">
                   <label for="category_id">分类</label>
-                  <select id="category_id" name="category_id">
-                    <option value="">未分类</option>
+                  <select id="category_id" name="category_id" required>
+                    <option value="" disabled>请选择分类</option>
                     <?php foreach ($categories as $category): ?>
                       <option value="<?= h($category['id']) ?>"<?= (string)$values['category_id'] === (string)$category['id'] ? ' selected' : '' ?>><?= h($category['name']) ?></option>
                     <?php endforeach; ?>
@@ -2712,12 +2977,20 @@ switch ($action) {
         render_rss_feed();
         break;
 
+    case 'sitemap':
+        render_sitemap();
+        break;
+
     case 'archives':
         render_archives();
         break;
 
     case 'tags':
         render_tags_index();
+        break;
+
+    case 'links':
+        render_links_page();
         break;
 
     case 'tag':
@@ -2784,6 +3057,18 @@ switch ($action) {
         render_admin_categories_page();
         break;
 
+    case 'admin_tags':
+        render_admin_tags_page();
+        break;
+
+    case 'admin_links':
+        render_admin_links_page();
+        break;
+
+    case 'admin_users':
+        render_admin_users_page();
+        break;
+
     case 'admin_settings':
         render_admin_settings_page();
         break;
@@ -2795,20 +3080,18 @@ switch ($action) {
         }
         verify_csrf();
         $siteName = trim((string)($_POST['site_name'] ?? ''));
-        $authorName = trim((string)($_POST['author_name'] ?? ''));
         $postsPerPage = max(1, min(24, (int)($_POST['posts_per_page'] ?? (int)default_settings()['posts_per_page'])));
         $prettyUrl = (string)($_POST['pretty_url'] ?? '0') === '1' ? '1' : '0';
         save_settings([
             'site_name' => $siteName !== '' ? $siteName : default_settings()['site_name'],
-            'author_name' => $authorName !== '' ? $authorName : default_settings()['author_name'],
             'site_url' => trim((string)($_POST['site_url'] ?? '')),
-            'logo_url' => default_settings()['logo_url'],
+            'favicon_url' => trim((string)($_POST['favicon_url'] ?? '')) ?: default_settings()['favicon_url'],
             'footer_beian' => trim((string)($_POST['footer_beian'] ?? '')),
             'posts_per_page' => (string)$postsPerPage,
             'pretty_url' => $prettyUrl,
             'site_tagline' => trim((string)($_POST['site_tagline'] ?? '')),
             'site_description' => trim((string)($_POST['site_description'] ?? '')),
-            'home_intro' => trim((string)($_POST['home_intro'] ?? '')),
+            'site_keywords' => trim((string)($_POST['site_keywords'] ?? '')),
             'site_footer' => trim((string)($_POST['site_footer'] ?? '')),
         ]);
         set_flash('success', '站点设置已更新。');
@@ -2858,11 +3141,131 @@ switch ($action) {
         verify_csrf();
         $id = (int)($_POST['id'] ?? 0);
         if ($id > 0) {
-            q('UPDATE posts SET category_id = NULL WHERE category_id = ?', [$id]);
+            $postCount = (int)val('SELECT COUNT(*) FROM posts WHERE kind = ? AND category_id = ?', ['post', $id]);
+            if ($postCount > 0) {
+                set_flash('error', '该分类下仍有文章，请先将文章移动到其他分类。');
+                redirect_to(url_for('admin_categories'));
+            }
             q('DELETE FROM categories WHERE id = ?', [$id]);
         }
         set_flash('success', '分类已删除。');
         redirect_to(url_for('admin_categories'));
+        break;
+
+    case 'save_link':
+        require_admin();
+        if ($_SERVER['REQUEST_METHOD'] !== 'POST') { redirect_to(url_for('admin_links')); }
+        verify_csrf();
+        $id = (int)($_POST['id'] ?? 0);
+        $name = trim((string)($_POST['name'] ?? ''));
+        $url = trim((string)($_POST['url'] ?? ''));
+        $iconUrl = trim((string)($_POST['icon_url'] ?? ''));
+        $description = trim((string)($_POST['description'] ?? ''));
+        $sortOrder = (int)($_POST['sort_order'] ?? 0);
+        $errors = [];
+        if ($name === '') { $errors[] = '请填写网站名称。'; }
+        if (!filter_var($url, FILTER_VALIDATE_URL) || !in_array(str_lower_u((string)parse_url($url, PHP_URL_SCHEME)), ['http', 'https'], true)) { $errors[] = '请填写有效的 HTTP 或 HTTPS 地址。'; }
+        if ($iconUrl !== '' && !filter_var($iconUrl, FILTER_VALIDATE_URL)) { $errors[] = '网站图标地址格式不正确。'; }
+        if ($errors) { render_admin_links_page(['id' => (string)$id, 'name' => $name, 'url' => $url, 'icon_url' => $iconUrl, 'description' => $description, 'sort_order' => (string)$sortOrder], $errors); }
+        if ($id > 0 && one('SELECT id FROM links WHERE id = ?', [$id])) {
+            q('UPDATE links SET name = ?, url = ?, icon_url = ?, description = ?, sort_order = ?, updated_at = ? WHERE id = ?', [$name, $url, $iconUrl, $description, $sortOrder, time(), $id]);
+            set_flash('success', '链接已更新。');
+        } else {
+            $now = time();
+            q('INSERT INTO links(name, url, icon_url, description, sort_order, created_at, updated_at) VALUES(?,?,?,?,?,?,?)', [$name, $url, $iconUrl, $description, $sortOrder, $now, $now]);
+            set_flash('success', '链接已添加。');
+        }
+        redirect_to(url_for('admin_links'));
+        break;
+
+    case 'save_tag':
+        require_admin();
+        if ($_SERVER['REQUEST_METHOD'] !== 'POST') { redirect_to(url_for('admin_tags')); }
+        verify_csrf();
+        $oldTag = trim((string)($_POST['old_tag'] ?? ''));
+        $newTag = trim((string)($_POST['new_tag'] ?? ''));
+        $tagSlug = trim((string)($_POST['tag_slug'] ?? ''));
+        $errors = [];
+        if ($oldTag === '' || $newTag === '') { $errors[] = '原标签和新标签不能为空。'; }
+        if (count(parse_tags_input($newTag)) !== 1) { $errors[] = '新标签不能包含逗号。'; }
+        if (!preg_match('/^[a-z0-9]+(?:-[a-z0-9]+)*$/', $tagSlug)) { $errors[] = 'Slug 格式不正确。'; }
+        if (one('SELECT label FROM tag_meta WHERE slug = ? AND label != ?', [$tagSlug, $oldTag])) { $errors[] = 'Slug 已被其他标签使用。'; }
+        if ($errors) { render_admin_tags_page(['old_tag' => $oldTag, 'new_tag' => $newTag, 'tag_slug' => $tagSlug], $errors); }
+        if (str_lower_u($oldTag) !== str_lower_u($newTag)) { replace_tag_everywhere($oldTag, $newTag); }
+        q('DELETE FROM tag_meta WHERE label = ?', [$oldTag]);
+        q('INSERT OR REPLACE INTO tag_meta(label, slug, updated_at) VALUES(?,?,?)', [$newTag, $tagSlug, time()]);
+        set_flash('success', '标签名称和 Slug 已更新。');
+        redirect_to(url_for('admin_tags'));
+        break;
+
+    case 'delete_tag':
+        require_admin();
+        if ($_SERVER['REQUEST_METHOD'] !== 'POST') { redirect_to(url_for('admin_tags')); }
+        verify_csrf();
+        $selected = $_POST['tag_ids'] ?? [];
+        if (!is_array($selected)) { $selected = []; }
+        $selected = array_values(array_unique(array_filter(array_map(static fn($tag): string => trim((string)$tag), $selected))));
+        foreach ($selected as $tag) {
+            replace_tag_everywhere($tag, null);
+            q('DELETE FROM tag_meta WHERE label = ?', [$tag]);
+        }
+        set_flash('success', $selected ? '所选标签已移除，文章内容保持不变。' : '请先选择需要删除的标签。');
+        redirect_to(url_for('admin_tags'));
+        break;
+
+    case 'delete_link':
+        require_admin();
+        if ($_SERVER['REQUEST_METHOD'] !== 'POST') { redirect_to(url_for('admin_links')); }
+        verify_csrf();
+        q('DELETE FROM links WHERE id = ?', [(int)($_POST['id'] ?? 0)]);
+        set_flash('success', '链接已删除。');
+        redirect_to(url_for('admin_links'));
+        break;
+
+    case 'save_user':
+        require_admin();
+        if ($_SERVER['REQUEST_METHOD'] !== 'POST') { redirect_to(url_for('admin_users')); }
+        verify_csrf();
+        $id = (int)($_POST['id'] ?? 0);
+        $username = trim((string)($_POST['username'] ?? ''));
+        $password = (string)($_POST['password'] ?? '');
+        $nickname = trim((string)($_POST['nickname'] ?? ''));
+        $email = trim((string)($_POST['email'] ?? ''));
+        $avatarUrl = trim((string)($_POST['avatar_url'] ?? ''));
+        $websiteUrl = trim((string)($_POST['website_url'] ?? ''));
+        $socialLinks = trim((string)($_POST['social_links'] ?? ''));
+        $signature = trim((string)($_POST['signature'] ?? ''));
+        $errors = [];
+        if ($username === '') { $errors[] = '用户名不能为空。'; }
+        if ($nickname === '') { $errors[] = '昵称不能为空。'; }
+        if ($email !== '' && !filter_var($email, FILTER_VALIDATE_EMAIL)) { $errors[] = '邮箱地址格式不正确。'; }
+        foreach (['头像地址' => $avatarUrl, '网站地址' => $websiteUrl] as $label => $url) { if ($url !== '' && !filter_var($url, FILTER_VALIDATE_URL)) { $errors[] = $label . '格式不正确。'; } }
+        foreach (preg_split('/\R+/', $socialLinks) ?: [] as $url) { if (trim($url) !== '' && !filter_var(trim($url), FILTER_VALIDATE_URL)) { $errors[] = '社交媒体链接必须是完整网址。'; break; } }
+        if (one('SELECT id FROM users WHERE username = ? AND id != ?', [$username, $id])) { $errors[] = '用户名已存在。'; }
+        if ($id < 1 && strlen($password) < 8) { $errors[] = '密码至少需要 8 个字符。'; }
+        if ($id > 0 && $password !== '' && strlen($password) < 8) { $errors[] = '新密码至少需要 8 个字符。'; }
+        $profileForm = ['id' => (string)$id, 'username' => $username, 'nickname' => $nickname, 'email' => $email, 'avatar_url' => $avatarUrl, 'website_url' => $websiteUrl, 'social_links' => $socialLinks, 'signature' => $signature];
+        if ($errors) { render_admin_users_page($profileForm, $errors); }
+        if ($id > 0 && one('SELECT id FROM users WHERE id = ?', [$id])) {
+            if ($password !== '') { q('UPDATE users SET username = ?, password_hash = ?, nickname = ?, email = ?, avatar_url = ?, website_url = ?, social_links = ?, signature = ? WHERE id = ?', [$username, password_hash($password, PASSWORD_DEFAULT), $nickname, $email, $avatarUrl, $websiteUrl, $socialLinks, $signature, $id]); }
+            else { q('UPDATE users SET username = ?, nickname = ?, email = ?, avatar_url = ?, website_url = ?, social_links = ?, signature = ? WHERE id = ?', [$username, $nickname, $email, $avatarUrl, $websiteUrl, $socialLinks, $signature, $id]); }
+            set_flash('success', '用户已更新。');
+        } else {
+            q('INSERT INTO users(username, password_hash, nickname, email, avatar_url, website_url, social_links, signature, created_at) VALUES(?,?,?,?,?,?,?,?,?)', [$username, password_hash($password, PASSWORD_DEFAULT), $nickname, $email, $avatarUrl, $websiteUrl, $socialLinks, $signature, time()]);
+            set_flash('success', '用户已添加。');
+        }
+        redirect_to(url_for('admin_users'));
+        break;
+
+    case 'delete_user':
+        require_admin();
+        if ($_SERVER['REQUEST_METHOD'] !== 'POST') { redirect_to(url_for('admin_users')); }
+        verify_csrf();
+        $id = (int)($_POST['id'] ?? 0);
+        if ($id === (int)(current_admin()['id'] ?? 0)) { set_flash('error', '不能删除当前登录账号。'); }
+        elseif ((int)val('SELECT COUNT(*) FROM users') <= 1) { set_flash('error', '系统必须保留至少一个管理员。'); }
+        else { q('UPDATE posts SET author_id = ? WHERE author_id = ?', [(int)(current_admin()['id'] ?? 0), $id]); q('DELETE FROM users WHERE id = ?', [$id]); set_flash('success', '用户已删除，其文章已转移给当前管理员。'); }
+        redirect_to(url_for('admin_users'));
         break;
 
     case 'upload_attachment':
@@ -2880,8 +3283,9 @@ switch ($action) {
             if (!$errors) {
                 $now = time();
                 q(
-                    'INSERT INTO posts(kind, category_id, slug, title, tags, excerpt, content, status, published_at, created_at, updated_at) VALUES(?,?,?,?,?,?,?,?,?,?,?)',
+                    'INSERT INTO posts(author_id, kind, category_id, slug, title, tags, excerpt, content, status, published_at, created_at, updated_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?)',
                     [
+                        (int)(current_admin()['id'] ?? 0),
                         $data['kind'],
                         $data['category_id'],
                         $data['slug'],

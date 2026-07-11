@@ -18,13 +18,15 @@ function i_default_settings(): array
 {
     return [
         'site_name' => 'Simple PHP Blog',
-        'author_name' => 'Admin',
         'site_url' => '',
         'site_tagline' => 'A small PHP blog running on one main entry file.',
         'site_description' => 'A simple PHP + SQLite blog inspired by Hugo Paper.',
-        'home_intro' => '安静地写点东西，保留足够留白，让文章本身站到前面。',
+        'site_keywords' => '',
+        'ai_api_url' => 'https://api.deepseek.com',
+        'ai_api_key' => '',
+        'ai_model' => 'deepseek-v4-flash',
         'site_footer' => '',
-        'logo_url' => './logo.png',
+        'favicon_url' => 'logo.png',
         'footer_beian' => '',
         'posts_per_page' => '6',
         'pretty_url' => '0',
@@ -248,7 +250,7 @@ function i_render_form(array $form, array $errors = []): void
                 <input id="admin_username" name="admin_username" type="text" value="<?= i_h((string)$form['admin_username']) ?>" required>
               </div>
               <div class="field">
-                <label for="author_name">作者显示名</label>
+                <label for="author_name">管理员昵称</label>
                 <input id="author_name" name="author_name" type="text" value="<?= i_h((string)$form['author_name']) ?>" required>
               </div>
             </div>
@@ -296,8 +298,8 @@ function i_render_form(array $form, array $errors = []): void
         <div class="panel__body">
           <ul class="archive-items archive-items--plain">
             <li class="archive-item"><span>随机文件名 SQLite 数据库</span></li>
-            <li class="archive-item"><span>`settings` / `users` / `posts` 三张表</span></li>
-            <li class="archive-item"><span>管理员账号、欢迎文章与默认关于页</span></li>
+            <li class="archive-item"><span>站点设置、用户、内容与分类数据表</span></li>
+            <li class="archive-item"><span>默认分类、归属该分类的欢迎文章与默认关于页</span></li>
             <li class="archive-item"><span>`data/install.lock` 安装锁</span></li>
             <li class="archive-item"><span>`cache/settings.php` 站点配置缓存</span></li>
           </ul>
@@ -441,12 +443,19 @@ $db->exec(
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         username TEXT NOT NULL UNIQUE,
         password_hash TEXT NOT NULL,
+        nickname TEXT NOT NULL DEFAULT \'\',
+        email TEXT NOT NULL DEFAULT \'\',
+        avatar_url TEXT NOT NULL DEFAULT \'\',
+        website_url TEXT NOT NULL DEFAULT \'\',
+        social_links TEXT NOT NULL DEFAULT \'\',
+        signature TEXT NOT NULL DEFAULT \'\',
         created_at INTEGER NOT NULL
     )'
 );
 $db->exec(
     'CREATE TABLE IF NOT EXISTS posts(
         id INTEGER PRIMARY KEY AUTOINCREMENT,
+        author_id INTEGER,
         category_id INTEGER,
         slug TEXT NOT NULL UNIQUE,
         title TEXT NOT NULL,
@@ -479,10 +488,8 @@ $db->exec('CREATE INDEX IF NOT EXISTS idx_categories_sort ON categories(sort_ord
 $now = time();
 $settings = i_default_settings();
 $settings['site_name'] = $form['site_name'];
-$settings['author_name'] = $form['author_name'];
 $settings['site_tagline'] = $form['site_tagline'];
 $settings['site_description'] = $form['site_tagline'];
-$settings['home_intro'] = $form['site_tagline'];
 $settings['pretty_url'] = $form['pretty_url'];
 
 $statement = $db->prepare('INSERT OR REPLACE INTO settings(name, value) VALUES(?, ?)');
@@ -490,17 +497,19 @@ foreach ($settings as $name => $value) {
     $statement->execute([$name, $value]);
 }
 
-$db->prepare('INSERT INTO users(username, password_hash, created_at) VALUES(?, ?, ?)')
-    ->execute([$form['admin_username'], password_hash($password, PASSWORD_DEFAULT), $now]);
+$db->prepare('INSERT INTO users(username, password_hash, nickname, email, avatar_url, website_url, social_links, created_at) VALUES(?, ?, ?, ?, ?, ?, ?, ?)')
+    ->execute([$form['admin_username'], password_hash($password, PASSWORD_DEFAULT), $form['author_name'], '', '', '', '', $now]);
+$defaultAuthorId = (int)$db->lastInsertId();
 
 $db->prepare('INSERT INTO categories(name, slug, description, sort_order, created_at, updated_at) VALUES(?, ?, ?, ?, ?, ?)')
     ->execute(['默认分类', 'default', '安装时自动创建的默认文章分类。', 0, $now, $now]);
 $defaultCategoryId = (int)$db->lastInsertId();
 
 $db->prepare(
-    'INSERT INTO posts(kind, category_id, slug, title, tags, excerpt, content, status, published_at, created_at, updated_at)
-     VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)'
+    'INSERT INTO posts(author_id, kind, category_id, slug, title, tags, excerpt, content, status, published_at, created_at, updated_at)
+     VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)'
 )->execute([
+    $defaultAuthorId,
     'post',
     $defaultCategoryId,
     i_slugify($form['welcome_title']),
@@ -515,9 +524,10 @@ $db->prepare(
 ]);
 
 $db->prepare(
-    'INSERT INTO posts(kind, category_id, slug, title, tags, excerpt, content, status, published_at, created_at, updated_at)
-     VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)'
+    'INSERT INTO posts(author_id, kind, category_id, slug, title, tags, excerpt, content, status, published_at, created_at, updated_at)
+     VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)'
 )->execute([
+    $defaultAuthorId,
     'page',
     null,
     'about',
