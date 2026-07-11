@@ -71,7 +71,7 @@ http://127.0.0.1:8000/install.php
 - `/archives`
 - `/tags`
 - `/tag/php`
-- `/post/your-slug`
+- `/archive/your-slug`
 - `/about`
 - `/rss.xml`
 - `/login`

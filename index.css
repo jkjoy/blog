@@ -2001,6 +2001,17 @@ textarea:focus {
 
 }
 
+.theme-admin .admin-table input[type="checkbox"] {
+  width: 16px;
+  height: 16px;
+  min-height: 0;
+  margin: 0;
+  padding: 0;
+  vertical-align: middle;
+  accent-color: var(--admin-accent);
+  box-shadow: none;
+}
+
 .theme-admin .rewrite-help {
   margin-top: 12px;
   padding: 14px;
@@ -2027,6 +2038,58 @@ textarea:focus {
   background: #fff;
   color: var(--admin-text);
   font: 12px/1.6 ui-monospace, SFMono-Regular, Consolas, monospace;
+}
+
+.theme-admin .field-label-row,
+.theme-admin .ai-modal__header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.theme-admin .button--compact {
+  min-height: 30px;
+  padding: 0 10px;
+  font-size: 12px;
+}
+
+.theme-admin .ai-modal[hidden] {
+  display: none;
+}
+
+.theme-admin .ai-modal {
+  position: fixed;
+  inset: 0;
+  z-index: 100;
+  display: grid;
+  place-items: center;
+  padding: 20px;
+}
+
+.theme-admin .ai-modal__backdrop {
+  position: absolute;
+  inset: 0;
+  background: rgba(17, 24, 39, 0.42);
+}
+
+.theme-admin .ai-modal__panel {
+  position: relative;
+  z-index: 1;
+  width: min(100%, 620px);
+  padding: 22px;
+  border: 1px solid var(--admin-border);
+  border-radius: var(--admin-radius);
+  background: var(--admin-panel);
+  box-shadow: 0 24px 80px rgba(31, 35, 41, 0.2);
+}
+
+.theme-admin .ai-modal__header {
+  margin-bottom: 18px;
+}
+
+.theme-admin .ai-modal__header h2 {
+  font-size: 18px;
 }
 
 /* Terminal public theme */

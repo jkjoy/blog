@@ -303,6 +303,9 @@ function default_settings(): array
         'ai_api_url' => 'https://api.deepseek.com',
         'ai_api_key' => '',
         'ai_model' => 'deepseek-v4-flash',
+        'ai_slug_prompt' => 'Translate the title into a concise English URL slug. Output lowercase ASCII words separated only by hyphens. Output the slug only, without quotes or explanation.',
+        'ai_summary_prompt' => '根据文章内容生成不超过100个汉字的中文摘要。只输出摘要正文，不要标题、引号、解释或 Markdown 标记。',
+        'ai_polish_prompt' => '你是专业中文编辑。严格执行用户要求，保留有效 Markdown 结构。只输出处理后的完整正文，不要解释处理过程。',
         'site_footer' => '',
         'favicon_url' => 'logo.png',
         'footer_beian' => '',
@@ -612,6 +615,11 @@ function apply_pretty_route(): void
         return;
     }
 
+    if (preg_match('#^/category/(.+)$#u', $path, $matches)) {
+        set_route_params(['a' => 'category', 'slug' => trim($matches[1], '/')]);
+        return;
+    }
+
     if (preg_match('#^/pages/(.+)$#u', $path, $matches)) {
         set_route_params(['a' => 'page', 'slug' => trim($matches[1], '/')]);
         return;
@@ -638,6 +646,11 @@ function apply_pretty_route(): void
     }
 
     if (preg_match('#^/post/(.+)$#u', $path, $matches)) {
+        header('Location: ' . app_path('/archive/' . rawurlencode(trim($matches[1], '/'))), true, 301);
+        exit;
+    }
+
+    if (preg_match('#^/archive/(.+)$#u', $path, $matches)) {
         set_route_params(['a' => 'post', 'slug' => trim($matches[1], '/')]);
         return;
     }
@@ -696,6 +709,7 @@ function url_for(string $route, array $params = []): string
         'tags' => $pretty ? app_path('/tags') : script_url() . '?a=tags',
         'links' => $pretty ? app_path('/links') : script_url() . '?a=links',
         'tag' => $pretty ? app_path('/tag/' . rawurlencode((string)($params['slug'] ?? ''))) : script_url() . '?a=tag&slug=' . rawurlencode((string)($params['slug'] ?? '')),
+        'category' => $pretty ? app_path('/category/' . rawurlencode((string)($params['slug'] ?? ''))) : script_url() . '?a=category&slug=' . rawurlencode((string)($params['slug'] ?? '')),
         'page' => $pretty ? app_path('/' . rawurlencode((string)($params['slug'] ?? ''))) : script_url() . '?a=page&slug=' . rawurlencode((string)($params['slug'] ?? '')),
         'login' => $pretty ? app_path('/login') : script_url() . '?a=login',
         'logout' => $pretty ? app_path('/logout') : script_url() . '?a=logout',
@@ -709,7 +723,7 @@ function url_for(string $route, array $params = []): string
         'admin_settings' => $pretty ? app_path('/admin/settings') : script_url() . '?a=admin_settings',
         'write' => $pretty ? app_path('/write') : script_url() . '?a=write',
         'edit' => $pretty ? app_path('/edit/' . (int)($params['id'] ?? 0)) : script_url() . '?a=edit&id=' . (int)($params['id'] ?? 0),
-        'post' => $pretty ? app_path('/post/' . rawurlencode((string)($params['slug'] ?? ''))) : script_url() . '?a=post&slug=' . rawurlencode((string)($params['slug'] ?? '')),
+        'post' => $pretty ? app_path('/archive/' . rawurlencode((string)($params['slug'] ?? ''))) : script_url() . '?a=post&slug=' . rawurlencode((string)($params['slug'] ?? '')),
         'save_settings' => script_url() . '?a=save_settings',
         'save_ai_settings' => script_url() . '?a=save_ai_settings',
         'ai_generate' => script_url() . '?a=ai_generate',
@@ -1301,6 +1315,11 @@ function category_name(?int $id): string
     }
 
     return (string)(val('SELECT name FROM categories WHERE id = ?', [$id]) ?: '未分类');
+}
+
+function category_by_id(?int $id): ?array
+{
+    return $id ? one('SELECT * FROM categories WHERE id = ?', [$id]) : null;
 }
 
 function unique_category_slug(string $seed, ?int $excludeId = null): string
@@ -2029,7 +2048,8 @@ function render_post_page(array $post): void
     $state = post_state($post);
     $authorProfile = one('SELECT username, nickname FROM users WHERE id = ?', [(int)($post['author_id'] ?? 0)]);
     $author = trim((string)($authorProfile['nickname'] ?? '')) ?: (string)($authorProfile['username'] ?? 'Admin');
-    $categoryName = category_name(isset($post['category_id']) ? (int)$post['category_id'] : null);
+    $category = category_by_id(isset($post['category_id']) ? (int)$post['category_id'] : null);
+    $categoryName = (string)($category['name'] ?? category_name(null));
     $viewCount = (int)val('SELECT views FROM posts WHERE id = ?', [(int)$post['id']]);
     $displayTime = (int)($post['published_at'] ?: $post['updated_at'] ?: $post['created_at']);
     $tagsMarkup = render_tag_chips($post);
@@ -2041,7 +2061,7 @@ function render_post_page(array $post): void
       <div class="meta">
         <span><?= h(date('F j, Y', $displayTime)) ?></span>
         <span>作者: <?= h($author) ?></span>
-        <span>分类: <?= h($categoryName) ?></span>
+        <span>分类: <?php if ($category): ?><a href="<?= h(url_for('category', ['slug' => (string)$category['slug']])) ?>"><?= h($categoryName) ?></a><?php else: ?><?= h($categoryName) ?><?php endif; ?></span>
         <span>浏览: <?= h((string)$viewCount) ?></span>
         <?php if (!is_live_post($post) && is_admin()): ?>
           <span><?= h($state['label']) ?>预览</span>
@@ -2185,6 +2205,22 @@ function render_tag_page(string $slug): void
         'mode' => 'public',
         'description' => '标签 ' . $label . ' 下的文章',
     ]);
+}
+
+function render_category_page(string $slug): void
+{
+    $category = one('SELECT * FROM categories WHERE slug = ?', [trim($slug)]);
+    if (!$category) { simple_error_page('分类不存在', '没有找到这个文章分类。', 404); }
+    $posts = all_rows(
+        'SELECT * FROM posts WHERE kind = ? AND category_id = ? AND status = ? AND published_at <= ? ORDER BY published_at DESC, id DESC',
+        ['post', (int)$category['id'], 'published', time()]
+    );
+    ob_start(); ?>
+    <h1 class="post-title"><?= h((string)$category['name']) ?></h1>
+    <?php if (trim((string)$category['description']) !== ''): ?><div class="meta"><?= h((string)$category['description']) ?></div><?php endif; ?>
+    <?php if ($posts): ?><article><div class="recent-posts section"><?= render_public_post_list($posts) ?></div></article><?php else: ?><div class="empty-notice"><p>这个分类下还没有已发布文章。</p></div><?php endif; ?>
+    <?php
+    render_layout((string)$category['name'], (string)ob_get_clean(), ['active' => 'home', 'mode' => 'public', 'description' => trim((string)$category['description']) ?: '分类文章']);
 }
 
 function render_rss_feed(): void
@@ -2361,6 +2397,9 @@ function render_sitemap(): void
     }
     foreach (tag_index_data() as $tag) {
         $add(url_for('tag', ['slug' => (string)$tag['slug']]), $now, '0.5');
+    }
+    foreach (all_rows('SELECT slug, updated_at FROM categories ORDER BY id') as $category) {
+        $add(url_for('category', ['slug' => (string)$category['slug']]), (int)$category['updated_at'], '0.5');
     }
 
     echo '<?xml version="1.0" encoding="UTF-8"?>' . "\n";
@@ -2722,6 +2761,48 @@ function render_admin_users_page(array $form = [], array $errors = []): void
     render_layout('用户管理', (string)ob_get_clean(), ['active' => 'users', 'wide' => true, 'description' => '用户管理']);
 }
 
+function render_admin_ai_page(): void
+{
+    require_admin();
+    $sidebar = render_admin_sidebar('ai');
+    ob_start(); ?>
+    <div class="admin-shell"><?= $sidebar ?><div class="admin-main"><?= render_admin_topbar('AI 设置') ?>
+      <section class="panel admin-list-panel"><div class="panel__header"><h2>模型接口</h2><p class="panel__meta">兼容 OpenAI Chat Completions 格式的服务。</p></div><div class="panel__body">
+        <form class="form-stack" method="post" action="<?= h(url_for('save_ai_settings')) ?>"><?= csrf_field() ?>
+          <div class="field"><label for="ai_api_url">API 地址</label><input id="ai_api_url" name="ai_api_url" type="url" value="<?= h(setting('ai_api_url', 'https://api.deepseek.com')) ?>" placeholder="https://api.deepseek.com" required><p class="field-hint">可以填写服务根地址或完整的 /chat/completions 地址。</p></div>
+          <div class="field"><label for="ai_api_key">API 密钥</label><input id="ai_api_key" name="ai_api_key" type="password" value="" placeholder="<?= setting('ai_api_key') !== '' ? '已保存，留空则不修改' : 'sk-...' ?>" autocomplete="new-password"><p class="field-hint">密钥仅保存在服务器 SQLite 中，不会发送到浏览器前端。</p></div>
+          <div class="field"><label for="ai_model">模型名称</label><input id="ai_model" name="ai_model" value="<?= h(setting('ai_model', 'deepseek-v4-flash')) ?>" placeholder="deepseek-v4-flash" required></div>
+          <div class="field"><label for="ai_slug_prompt">Slug 提示词</label><textarea id="ai_slug_prompt" name="ai_slug_prompt" rows="4" required><?= h(setting('ai_slug_prompt', default_settings()['ai_slug_prompt'])) ?></textarea></div>
+          <div class="field"><label for="ai_summary_prompt">摘要提示词</label><textarea id="ai_summary_prompt" name="ai_summary_prompt" rows="4" required><?= h(setting('ai_summary_prompt', default_settings()['ai_summary_prompt'])) ?></textarea></div>
+          <div class="field"><label for="ai_polish_prompt">润色提示词</label><textarea id="ai_polish_prompt" name="ai_polish_prompt" rows="4" required><?= h(setting('ai_polish_prompt', default_settings()['ai_polish_prompt'])) ?></textarea><p class="field-hint">弹窗中填写的具体要求会追加到这条系统提示词之后。</p></div>
+          <div class="action-row"><button class="button">保存 AI 设置</button></div>
+        </form>
+      </div></section>
+    </div></div><?php
+    render_layout('AI 设置', (string)ob_get_clean(), ['active' => 'ai', 'wide' => true, 'description' => 'AI 模型设置']);
+}
+
+function ai_completion(string $instruction, string $content): array
+{
+    $baseUrl = rtrim(trim(setting('ai_api_url')), '/');
+    $apiKey = trim(setting('ai_api_key'));
+    $model = trim(setting('ai_model'));
+    if ($baseUrl === '' || $apiKey === '' || $model === '') { return [false, '请先完成 AI 设置。']; }
+    $url = str_ends_with($baseUrl, '/chat/completions') ? $baseUrl : $baseUrl . '/chat/completions';
+    $payload = json_encode(['model' => $model, 'messages' => [['role' => 'system', 'content' => $instruction], ['role' => 'user', 'content' => $content]], 'temperature' => 0.3], JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES);
+    $curl = curl_init($url);
+    curl_setopt_array($curl, [CURLOPT_POST => true, CURLOPT_RETURNTRANSFER => true, CURLOPT_TIMEOUT => 60, CURLOPT_CONNECTTIMEOUT => 10, CURLOPT_HTTPHEADER => ['Authorization: Bearer ' . $apiKey, 'Content-Type: application/json'], CURLOPT_POSTFIELDS => $payload]);
+    $body = curl_exec($curl);
+    $status = (int)curl_getinfo($curl, CURLINFO_RESPONSE_CODE);
+    $error = curl_error($curl);
+    curl_close($curl);
+    if ($body === false) { return [false, 'AI 服务连接失败：' . $error]; }
+    $data = json_decode((string)$body, true);
+    $result = trim((string)($data['choices'][0]['message']['content'] ?? ''));
+    if ($status < 200 || $status >= 300 || $result === '') { return [false, (string)($data['error']['message'] ?? 'AI 服务返回异常（HTTP ' . $status . '）。')]; }
+    return [true, $result];
+}
+
 function render_admin_settings_page(): void
 {
     require_admin();
@@ -2769,7 +2850,7 @@ function render_admin_settings_page(): void
                     <option value="0"<?= setting('pretty_url', '0') === '0' ? ' selected' : '' ?>>关闭</option>
                     <option value="1"<?= setting('pretty_url', '0') === '1' ? ' selected' : '' ?>>开启</option>
                   </select>
-                  <p class="field-hint">开启后链接会变成 `/post/slug` 这类路径，需要服务器 rewrite 支持。</p>
+                  <p class="field-hint">开启后文章链接会变成 `/archive/slug`，需要服务器 rewrite 支持。</p>
                   <div class="rewrite-help" data-rewrite-help<?= setting('pretty_url', '0') === '1' ? '' : ' hidden' ?>>
                     <strong>Apache</strong>
                     <p>启用 <code>mod_rewrite</code>，并为当前目录设置 <code>AllowOverride All</code>。项目根目录已有可直接使用的 <code>.htaccess</code>。</p>
@@ -2883,7 +2964,7 @@ function render_editor_page(?array $existing = null, array $form = [], array $er
                   </select>
                 </div>
                 <div class="field">
-                  <label for="slug">Slug</label>
+                  <div class="field-label-row"><label for="slug">Slug</label><button class="button button--ghost button--compact" type="button" data-ai-action="slug">AI 生成</button></div>
                   <input id="slug" name="slug" type="text" value="<?= h((string)$values['slug']) ?>" placeholder="留空将自动生成">
                 </div>
                 <div class="field">
@@ -2908,7 +2989,7 @@ function render_editor_page(?array $existing = null, array $form = [], array $er
               </div>
 
               <div class="field">
-                <label for="excerpt">摘要</label>
+                <div class="field-label-row"><label for="excerpt">摘要</label><button class="button button--ghost button--compact" type="button" data-ai-action="summary">AI 摘要</button></div>
                 <textarea id="excerpt" name="excerpt" rows="3" placeholder="留空将自动从正文截取"><?= h((string)$values['excerpt']) ?></textarea>
               </div>
 
@@ -2922,7 +3003,7 @@ function render_editor_page(?array $existing = null, array $form = [], array $er
               </div>
 
               <div class="field">
-                <label for="content">正文</label>
+                <div class="field-label-row"><label for="content">正文</label><button class="button button--ghost button--compact" type="button" data-ai-action="polish">AI 润色</button></div>
                 <textarea id="content" class="editor-textarea" name="content" rows="18" required><?= h((string)$values['content']) ?></textarea>
               </div>
 
@@ -2942,6 +3023,17 @@ function render_editor_page(?array $existing = null, array $form = [], array $er
                 <button class="button" type="submit"><?= $isEdit ? '保存修改' : '创建文章' ?></button>
               </div>
             </form>
+            <div class="ai-editor" data-ai-editor data-url="<?= h(url_for('ai_generate')) ?>" data-csrf="<?= h(csrf_token()) ?>">
+              <div class="ai-modal" data-ai-modal hidden role="dialog" aria-modal="true" aria-labelledby="ai-modal-title">
+                <div class="ai-modal__backdrop" data-ai-close></div>
+                <div class="ai-modal__panel">
+                  <div class="ai-modal__header"><h2 id="ai-modal-title">AI 润色正文</h2><button class="button button--ghost button--compact" type="button" data-ai-close aria-label="关闭">关闭</button></div>
+                  <div class="field"><label for="ai_instruction">润色或生成要求</label><textarea id="ai_instruction" rows="5" placeholder="例如：修正语病，保持 Markdown 格式；补充一段实际使用示例；将内容改得更简洁。"></textarea></div>
+                  <p class="field-hint" data-ai-status></p>
+                  <div class="action-row"><button class="button button--secondary" type="button" data-ai-close>取消</button><button class="button" type="button" data-ai-confirm>确定并填入正文</button></div>
+                </div>
+              </div>
+            </div>
           </div>
         </section>
       </div>
@@ -2995,6 +3087,10 @@ switch ($action) {
 
     case 'tag':
         render_tag_page(trim((string)($_GET['slug'] ?? '')));
+        break;
+
+    case 'category':
+        render_category_page(trim((string)($_GET['slug'] ?? '')));
         break;
 
     case 'post':
@@ -3069,8 +3165,57 @@ switch ($action) {
         render_admin_users_page();
         break;
 
+    case 'admin_ai':
+        render_admin_ai_page();
+        break;
+
     case 'admin_settings':
         render_admin_settings_page();
+        break;
+
+    case 'save_ai_settings':
+        require_admin();
+        if ($_SERVER['REQUEST_METHOD'] !== 'POST') { redirect_to(url_for('admin_ai')); }
+        verify_csrf();
+        $apiUrl = rtrim(trim((string)($_POST['ai_api_url'] ?? '')), '/');
+        $apiKey = trim((string)($_POST['ai_api_key'] ?? ''));
+        $model = trim((string)($_POST['ai_model'] ?? ''));
+        $slugPrompt = trim((string)($_POST['ai_slug_prompt'] ?? ''));
+        $summaryPrompt = trim((string)($_POST['ai_summary_prompt'] ?? ''));
+        $polishPrompt = trim((string)($_POST['ai_polish_prompt'] ?? ''));
+        if (!filter_var($apiUrl, FILTER_VALIDATE_URL) || !in_array(str_lower_u((string)parse_url($apiUrl, PHP_URL_SCHEME)), ['http', 'https'], true) || $model === '' || $slugPrompt === '' || $summaryPrompt === '' || $polishPrompt === '') {
+            set_flash('error', '请填写有效的 API 地址、模型名称和提示词。');
+            redirect_to(url_for('admin_ai'));
+        }
+        $values = ['ai_api_url' => $apiUrl, 'ai_model' => $model, 'ai_slug_prompt' => $slugPrompt, 'ai_summary_prompt' => $summaryPrompt, 'ai_polish_prompt' => $polishPrompt];
+        if ($apiKey !== '') { $values['ai_api_key'] = $apiKey; }
+        save_settings($values);
+        set_flash('success', 'AI 设置已保存。');
+        redirect_to(url_for('admin_ai'));
+        break;
+
+    case 'ai_generate':
+        require_admin();
+        if ($_SERVER['REQUEST_METHOD'] !== 'POST') { json_response(['ok' => false, 'error' => '仅支持 POST 请求。'], 405); }
+        verify_csrf();
+        $type = (string)($_POST['type'] ?? '');
+        $content = trim((string)($_POST['content'] ?? ''));
+        $instruction = trim((string)($_POST['instruction'] ?? ''));
+        if (str_len_u($content) > 50000) { json_response(['ok' => false, 'error' => '内容过长，请控制在 50000 字以内。'], 422); }
+        if ($type === 'slug') {
+            if ($content === '') { json_response(['ok' => false, 'error' => '请先填写文章标题。'], 422); }
+            [$ok, $result] = ai_completion(setting('ai_slug_prompt', default_settings()['ai_slug_prompt']), $content);
+            if ($ok) { $result = trim((string)preg_replace('/[^a-z0-9]+/', '-', str_lower_u($result)), '-'); $result = substr($result, 0, 100); }
+        } elseif ($type === 'summary') {
+            if ($content === '') { json_response(['ok' => false, 'error' => '请先填写文章正文。'], 422); }
+            [$ok, $result] = ai_completion(setting('ai_summary_prompt', default_settings()['ai_summary_prompt']), $content);
+            if ($ok) { $result = str_sub_u($result, 0, 100); }
+        } elseif ($type === 'polish') {
+            if ($instruction === '') { json_response(['ok' => false, 'error' => '请填写润色或生成要求。'], 422); }
+            [$ok, $result] = ai_completion(setting('ai_polish_prompt', default_settings()['ai_polish_prompt']) . ' 用户要求：' . $instruction, $content !== '' ? $content : '请根据要求生成正文。');
+        } else { json_response(['ok' => false, 'error' => '未知的 AI 操作。'], 422); }
+        if (!$ok) { json_response(['ok' => false, 'error' => $result], 502); }
+        json_response(['ok' => true, 'result' => $result]);
         break;
 
     case 'save_settings':
