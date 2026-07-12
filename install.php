@@ -28,6 +28,7 @@ function i_default_settings(): array
         'ai_summary_prompt' => '根据文章内容生成不超过100个汉字的中文摘要。只输出摘要正文，不要标题、引号、解释或 Markdown 标记。',
         'ai_polish_prompt' => '你是专业中文编辑。严格执行用户要求，保留有效 Markdown 结构。只输出处理后的完整正文，不要解释处理过程。',
         'site_footer' => '',
+        'custom_head_code' => '',
         'favicon_url' => 'logo.png',
         'footer_beian' => '',
         'posts_per_page' => '6',

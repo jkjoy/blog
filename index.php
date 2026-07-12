@@ -312,6 +312,7 @@ function default_settings(): array
         'ai_summary_prompt' => '根据文章内容生成不超过100个汉字的中文摘要。只输出摘要正文，不要标题、引号、解释或 Markdown 标记。',
         'ai_polish_prompt' => '你是专业中文编辑。严格执行用户要求，保留有效 Markdown 结构。只输出处理后的完整正文，不要解释处理过程。',
         'site_footer' => '',
+        'custom_head_code' => '',
         'favicon_url' => 'logo.png',
         'footer_beian' => '',
         'posts_per_page' => '6',
@@ -1642,6 +1643,7 @@ function render_layout(string $title, string $content, array $options = []): voi
     $navPages = fetch_nav_pages();
     $status = (int)($options['status'] ?? 200);
     $bodyClass = $mode === 'public' ? 'theme-public' : 'theme-admin';
+    $customHeadCode = $mode === 'public' ? trim(setting('custom_head_code')) : '';
 
     if ($mode !== 'public' && !$admin) {
         $bodyClass .= ' theme-admin--guest';
@@ -1662,6 +1664,9 @@ function render_layout(string $title, string $content, array $options = []): voi
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@300;400;500;600;700&display=swap" rel="stylesheet">
   <link rel="stylesheet" href="<?= h(asset_url('index.css')) ?>?v=<?= h(APP_VERSION) ?>">
+  <?php if ($customHeadCode !== ''): ?>
+<?= $customHeadCode . "\n" ?>
+  <?php endif; ?>
 </head>
 <body class="<?= h($bodyClass) ?>">
   <?php if ($mode === 'public'): ?>
@@ -2881,6 +2886,11 @@ location / {
                 <label for="site_footer">页脚文案</label>
                 <input id="site_footer" name="site_footer" type="text" value="<?= h(setting('site_footer')) ?>" placeholder="支持 {year} 占位符">
               </div>
+              <div class="field">
+                <label for="custom_head_code">Head 自定义代码</label>
+                <textarea id="custom_head_code" name="custom_head_code" rows="10" spellcheck="false" placeholder="&lt;script&gt;...&lt;/script&gt;"><?= h(setting('custom_head_code')) ?></textarea>
+                <p class="field-hint">原样插入前台页面的 &lt;/head&gt; 前，可用于统计脚本、meta 或 style；请仅使用可信代码。</p>
+              </div>
               <div class="action-row">
                 <button class="button" type="submit">保存设置</button>
               </div>
@@ -3251,6 +3261,7 @@ switch ($action) {
             'site_description' => trim((string)($_POST['site_description'] ?? '')),
             'site_keywords' => trim((string)($_POST['site_keywords'] ?? '')),
             'site_footer' => trim((string)($_POST['site_footer'] ?? '')),
+            'custom_head_code' => trim((string)($_POST['custom_head_code'] ?? '')),
         ]);
         set_flash('success', '站点设置已更新。');
         redirect_to(url_for('admin_settings'));
