@@ -1681,9 +1681,17 @@ function render_layout(string $title, string $content, array $options = []): voi
           <a class="<?= $active === 'tags' ? 'is-active' : '' ?>" href="<?= h(url_for('tags')) ?>">[标签]</a>
           <a class="<?= $active === 'archives' ? 'is-active' : '' ?>" href="<?= h(url_for('archives')) ?>">[归档]</a>
           <a class="<?= $active === 'links' ? 'is-active' : '' ?>" href="<?= h(url_for('links')) ?>">[链接]</a>
+          <?php $loginLinkRendered = false; ?>
           <?php foreach ($navPages as $page): ?>
             <a class="<?= $active === 'page:' . $page['slug'] ? 'is-active' : '' ?>" href="<?= h(content_permalink($page)) ?>">[<?= h($page['title']) ?>]</a>
+            <?php if (!$loginLinkRendered && (strtolower((string)$page['slug']) === 'about' || trim((string)$page['title']) === '关于')): ?>
+              <a class="<?= $active === 'login' ? 'is-active' : '' ?>" href="<?= h(url_for('login')) ?>">[登录]</a>
+              <?php $loginLinkRendered = true; ?>
+            <?php endif; ?>
           <?php endforeach; ?>
+          <?php if (!$loginLinkRendered): ?>
+            <a class="<?= $active === 'login' ? 'is-active' : '' ?>" href="<?= h(url_for('login')) ?>">[登录]</a>
+          <?php endif; ?>
         </nav>
         <div class="cmd-echo"><span class="prompt-part">visitor@<?= h($siteName) ?></span><span class="path-part">:~</span>$ cat <?= h(strtolower(str_replace(' ', '-', $title))) ?>.md</div>
         <?php if ($flash): ?><div class="line amber"><?= h((string)$flash['message']) ?></div><?php endif; ?>
