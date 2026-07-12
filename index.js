@@ -1,4 +1,42 @@
 document.addEventListener("DOMContentLoaded", () => {
+  const accountMenus = Array.from(document.querySelectorAll("[data-admin-account]"));
+  if (!accountMenus.length) return;
+
+  accountMenus.forEach((menu) => {
+    menu.addEventListener("toggle", () => {
+      if (!menu.open) return;
+      accountMenus.forEach((otherMenu) => {
+        if (otherMenu !== menu) {
+          otherMenu.open = false;
+        }
+      });
+    });
+  });
+
+  document.addEventListener("click", (event) => {
+    const target = event.target;
+    if (!(target instanceof Node)) return;
+    accountMenus.forEach((menu) => {
+      if (!menu.contains(target)) {
+        menu.open = false;
+      }
+    });
+  });
+
+  document.addEventListener("keydown", (event) => {
+    if (event.key !== "Escape") return;
+    accountMenus.forEach((menu) => {
+      if (!menu.open) return;
+      menu.open = false;
+      const toggle = menu.querySelector("summary");
+      if (toggle instanceof HTMLElement) {
+        toggle.focus();
+      }
+    });
+  });
+});
+
+document.addEventListener("DOMContentLoaded", () => {
   const prettyUrl = document.getElementById("pretty_url");
   const rewriteHelp = document.querySelector("[data-rewrite-help]");
   if (prettyUrl && rewriteHelp) {

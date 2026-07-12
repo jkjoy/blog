@@ -4,7 +4,7 @@ declare(strict_types=1);
 
 session_start();
 
-const APP_VERSION = 'v1.0.1';
+const APP_VERSION = 'v1.0.2';
 const DATA_DIR = __DIR__ . '/data';
 const CACHE_DIR = __DIR__ . '/cache';
 const UPLOAD_DIR = __DIR__ . '/uploads';
@@ -531,7 +531,7 @@ function current_admin(): ?array
         return $admin = null;
     }
 
-    return $admin = one('SELECT id, username, created_at FROM users WHERE id = ?', [$id]);
+    return $admin = one('SELECT id, username, avatar_url, created_at FROM users WHERE id = ?', [$id]);
 }
 
 function is_admin(): bool
@@ -1757,6 +1757,7 @@ function admin_icon(string $name): string
         'users' => '<path d="M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2"></path><circle cx="9" cy="7" r="4"></circle><path d="M22 21v-2a4 4 0 0 0-3-3.87"></path><path d="M16 3.13a4 4 0 0 1 0 7.75"></path>',
         'ai' => '<path d="m12 3-1.4 3.6L7 8l3.6 1.4L12 13l1.4-3.6L17 8l-3.6-1.4L12 3z"></path><path d="m5 14-.8 2.2L2 17l2.2.8L5 20l.8-2.2L8 17l-2.2-.8L5 14z"></path><path d="m19 13-1 2.5-2.5 1 2.5 1L19 20l1-2.5 2.5-1-2.5-1L19 13z"></path>',
         'settings' => '<path d="M12 15.5A3.5 3.5 0 1 0 12 8a3.5 3.5 0 0 0 0 7.5z"></path><path d="M19.4 15a1.7 1.7 0 0 0 .3 1.9l.1.1a2 2 0 1 1-2.8 2.8l-.1-.1a1.7 1.7 0 0 0-1.9-.3 1.7 1.7 0 0 0-1 1.5V21a2 2 0 1 1-4 0v-.1a1.7 1.7 0 0 0-1-1.5 1.7 1.7 0 0 0-1.9.3l-.1.1A2 2 0 1 1 4.2 17l.1-.1a1.7 1.7 0 0 0 .3-1.9 1.7 1.7 0 0 0-1.5-1H3a2 2 0 1 1 0-4h.1a1.7 1.7 0 0 0 1.5-1 1.7 1.7 0 0 0-.3-1.9L4.2 7A2 2 0 1 1 7 4.2l.1.1a1.7 1.7 0 0 0 1.9.3h.1a1.7 1.7 0 0 0 1-1.5V3a2 2 0 1 1 4 0v.1a1.7 1.7 0 0 0 1 1.5h.1a1.7 1.7 0 0 0 1.9-.3l.1-.1A2 2 0 1 1 19.8 7l-.1.1a1.7 1.7 0 0 0-.3 1.9v.1a1.7 1.7 0 0 0 1.5 1h.1a2 2 0 1 1 0 4h-.1a1.7 1.7 0 0 0-1.5 1z"></path>',
+        'logout' => '<path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4"></path><path d="M16 17l5-5-5-5"></path><path d="M21 12H9"></path>',
         default => '<circle cx="12" cy="12" r="8"></circle>',
     };
 
@@ -1768,7 +1769,10 @@ function render_admin_sidebar(string $active, array $summary = []): string
     $siteName = setting('site_name', default_settings()['site_name']);
     $admin = current_admin();
     $adminName = (string)($admin['username'] ?? 'Admin');
+    $adminId = (int)($admin['id'] ?? 0);
+    $adminAvatarUrl = trim((string)($admin['avatar_url'] ?? ''));
     $adminInitial = str_sub_u($adminName, 0, 1);
+    $userSettingsUrl = $adminId > 0 ? url_with_query(url_for('admin_users'), ['id' => $adminId]) : url_for('admin_users');
     $links = [
         [
             'label' => '博客概览',
@@ -1826,13 +1830,6 @@ function render_admin_sidebar(string $active, array $summary = []): string
             'href' => url_for('admin_settings'),
             'active' => $active === 'settings',
         ],
-        [
-            'label' => '用户管理',
-            'icon' => 'users',
-            'note' => '管理员账号',
-            'href' => url_for('admin_users'),
-            'active' => $active === 'users',
-        ],
     ];
 
     ob_start();
@@ -1881,9 +1878,28 @@ function render_admin_sidebar(string $active, array $summary = []): string
       <?php endif; ?>
 
       <div class="admin-side__footer">
-        <span class="admin-side__avatar"><?= h($adminInitial) ?></span>
-        <span class="admin-side__footer-text"><?= h($adminName) ?></span>
-        <a class="admin-side__logout" href="<?= h(url_for('logout')) ?>">退出登录</a>
+        <details class="admin-side__account" data-admin-account>
+          <summary class="admin-side__account-toggle" aria-label="打开用户菜单：<?= h($adminName) ?>">
+            <span class="admin-side__avatar">
+              <span aria-hidden="true"><?= h($adminInitial) ?></span>
+              <?php if ($adminAvatarUrl !== ''): ?>
+                <img src="<?= h($adminAvatarUrl) ?>" alt="" decoding="async" onerror="this.remove()">
+              <?php endif; ?>
+            </span>
+            <span class="admin-side__footer-text"><?= h($adminName) ?></span>
+            <span class="admin-side__account-caret" aria-hidden="true"></span>
+          </summary>
+          <div class="admin-side__account-menu" role="menu">
+            <a class="admin-side__account-item" role="menuitem" href="<?= h($userSettingsUrl) ?>">
+              <?= admin_icon('users') ?>
+              <span>用户设置</span>
+            </a>
+            <a class="admin-side__account-item admin-side__account-item--danger" role="menuitem" href="<?= h(url_for('logout')) ?>">
+              <?= admin_icon('logout') ?>
+              <span>退出登录</span>
+            </a>
+          </div>
+        </details>
       </div>
     </aside>
     <?php
@@ -1898,6 +1914,9 @@ function render_admin_topbar(string $title, string $actionLabel = '', string $ac
     <div class="admin-topbar">
       <div class="admin-crumb">控制台 / <b><?= h($title) ?></b></div>
       <div class="admin-topbar__actions">
+        <a class="admin-icon-btn" href="<?= h(url_for('home')) ?>" target="_blank" rel="noopener noreferrer" title="网站首页" aria-label="网站首页">
+          <?= admin_icon('home') ?>
+        </a>
         <?php if ($actionLabel !== '' && $actionUrl !== ''): ?>
           <a class="button" href="<?= h($actionUrl) ?>"><?= h($actionLabel) ?></a>
         <?php endif; ?>
