@@ -86,6 +86,7 @@ function i_environment_checks(): array
         ['label' => 'PDO SQLite 驱动', 'ok' => extension_loaded('pdo_sqlite') && in_array('sqlite', PDO::getAvailableDrivers(), true)],
         ['label' => 'cURL 扩展（AI 接口）', 'ok' => extension_loaded('curl')],
         ['label' => 'JSON 扩展', 'ok' => extension_loaded('json')],
+        ['label' => 'Fileinfo 扩展（安全识别上传文件）', 'ok' => extension_loaded('fileinfo')],
         ['label' => '安全随机数支持', 'ok' => function_exists('random_bytes')],
         ['label' => 'data 目录可写', 'ok' => is_dir(INSTALL_DATA_DIR) && is_writable(INSTALL_DATA_DIR)],
         ['label' => 'cache 目录可写', 'ok' => is_dir(INSTALL_CACHE_DIR) && is_writable(INSTALL_CACHE_DIR)],

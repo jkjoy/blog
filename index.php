@@ -2,6 +2,15 @@
 
 declare(strict_types=1);
 
+$sessionSecure = (!empty($_SERVER['HTTPS']) && strtolower((string)$_SERVER['HTTPS']) !== 'off')
+    || (string)($_SERVER['SERVER_PORT'] ?? '') === '443';
+session_set_cookie_params([
+    'lifetime' => 0,
+    'path' => '/',
+    'secure' => $sessionSecure,
+    'httponly' => true,
+    'samesite' => 'Lax',
+]);
 session_start();
 
 const APP_VERSION = 'v1.0.2';
@@ -391,6 +400,60 @@ function verify_csrf(): void
     }
 }
 
+function login_rate_file(): string
+{
+    $client = (string)($_SERVER['REMOTE_ADDR'] ?? 'unknown');
+    return CACHE_DIR . '/login-' . hash('sha256', $client) . '.json';
+}
+
+function login_rate_state(bool $recordFailure = false, bool $clear = false): array
+{
+    ensure_runtime_dirs();
+    $file = login_rate_file();
+    $handle = fopen($file, 'c+');
+    if ($handle === false) { return ['count' => 0, 'since' => time()]; }
+
+    flock($handle, LOCK_EX);
+    $raw = stream_get_contents($handle);
+    $state = json_decode($raw ?: '', true);
+    $now = time();
+    if (!is_array($state) || $now - (int)($state['since'] ?? 0) >= 900) {
+        $state = ['count' => 0, 'since' => $now];
+    }
+    if ($recordFailure) { $state['count'] = (int)$state['count'] + 1; }
+    if ($clear) { $state = ['count' => 0, 'since' => $now]; }
+    ftruncate($handle, 0);
+    rewind($handle);
+    fwrite($handle, json_encode($state));
+    fflush($handle);
+    flock($handle, LOCK_UN);
+    fclose($handle);
+    return $state;
+}
+
+function public_ip_address(string $ip): bool
+{
+    return filter_var($ip, FILTER_VALIDATE_IP, FILTER_FLAG_NO_PRIV_RANGE | FILTER_FLAG_NO_RES_RANGE) !== false;
+}
+
+function validated_ai_endpoint(string $baseUrl): ?array
+{
+    if (!filter_var($baseUrl, FILTER_VALIDATE_URL)) { return null; }
+    $parts = parse_url($baseUrl);
+    if (!is_array($parts) || str_lower_u((string)($parts['scheme'] ?? '')) !== 'https' || isset($parts['user']) || isset($parts['pass'])) { return null; }
+    $host = trim((string)($parts['host'] ?? ''), '[]');
+    if ($host === '') { return null; }
+    $addresses = filter_var($host, FILTER_VALIDATE_IP) ? [$host] : array_values(array_unique(array_merge(
+        gethostbynamel($host) ?: [],
+        array_column(dns_get_record($host, DNS_AAAA) ?: [], 'ipv6')
+    )));
+    foreach ($addresses as $address) {
+        if (!is_string($address) || !public_ip_address($address)) { return null; }
+    }
+    if ($addresses === []) { return null; }
+    return ['host' => $host, 'port' => (int)($parts['port'] ?? 443), 'ip' => $addresses[0]];
+}
+
 function json_response(array $payload, int $status = 200): void
 {
     http_response_code($status);
@@ -410,12 +473,9 @@ function ensure_upload_year_dir(): array
     }
 
     $htaccess = UPLOAD_DIR . '/.htaccess';
-    if (!is_file($htaccess)) {
-        file_put_contents(
-            $htaccess,
-            "Options -ExecCGI\nRemoveHandler .php .phtml .php3 .php4 .php5 .php7 .php8 .phar .cgi .pl .py .rb .asp .aspx .jsp\n<FilesMatch \"\\.(php|phtml|php3|php4|php5|php7|php8|phar|cgi|pl|py|rb|asp|aspx|jsp)$\">\n  Require all denied\n</FilesMatch>\n",
-            LOCK_EX
-        );
+    $htaccessRules = "Options -ExecCGI\nRemoveHandler .php .phtml .php3 .php4 .php5 .php7 .php8 .phar .cgi .pl .py .rb .asp .aspx .jsp\n<IfModule mod_headers.c>\n  Header set X-Content-Type-Options nosniff\n</IfModule>\n<FilesMatch \"\\.(php|phtml|php3|php4|php5|php7|php8|phar|cgi|pl|py|rb|asp|aspx|jsp)$\">\n  Require all denied\n</FilesMatch>\n";
+    if (!is_file($htaccess) || file_get_contents($htaccess) !== $htaccessRules) {
+        file_put_contents($htaccess, $htaccessRules, LOCK_EX);
     }
 
     return [$year, $dir];
@@ -446,7 +506,11 @@ function handle_attachment_upload(): void
 
     [$year, $dir] = ensure_upload_year_dir();
     $maxSize = 30 * 1024 * 1024;
-    $blockedExtensions = ['php', 'phtml', 'php3', 'php4', 'php5', 'php7', 'php8', 'phar', 'cgi', 'pl', 'py', 'rb', 'asp', 'aspx', 'jsp', 'html', 'htm', 'js', 'mjs', 'sh', 'bat', 'cmd', 'exe', 'dll'];
+    $allowedTypes = [
+        'jpg' => ['image/jpeg'], 'jpeg' => ['image/jpeg'], 'png' => ['image/png'],
+        'gif' => ['image/gif'], 'webp' => ['image/webp'], 'pdf' => ['application/pdf'],
+        'txt' => ['text/plain'], 'md' => ['text/plain'], 'zip' => ['application/zip', 'application/x-zip-compressed'],
+    ];
     $names = is_array($files['name']) ? $files['name'] : [$files['name']];
     $tmpNames = is_array($files['tmp_name']) ? $files['tmp_name'] : [$files['tmp_name']];
     $errors = is_array($files['error']) ? $files['error'] : [$files['error']];
@@ -480,8 +544,9 @@ function handle_attachment_upload(): void
             $extension = 'bin';
         }
 
-        if (in_array($extension, $blockedExtensions, true)) {
-            $failed[] = ['name' => $originalName, 'error' => '不允许上传脚本或可执行文件。'];
+        $mime = (new finfo(FILEINFO_MIME_TYPE))->file($tmpName) ?: 'application/octet-stream';
+        if (!isset($allowedTypes[$extension]) || !in_array($mime, $allowedTypes[$extension], true)) {
+            $failed[] = ['name' => $originalName, 'error' => '文件类型不在允许列表中。'];
             continue;
         }
 
@@ -2815,9 +2880,12 @@ function ai_completion(string $instruction, string $content): array
     $model = trim(setting('ai_model'));
     if ($baseUrl === '' || $apiKey === '' || $model === '') { return [false, '请先完成 AI 设置。']; }
     $url = str_ends_with($baseUrl, '/chat/completions') ? $baseUrl : $baseUrl . '/chat/completions';
+    $endpoint = validated_ai_endpoint($url);
+    if ($endpoint === null) { return [false, 'AI 地址必须使用 HTTPS 并解析到公网地址。']; }
     $payload = json_encode(['model' => $model, 'messages' => [['role' => 'system', 'content' => $instruction], ['role' => 'user', 'content' => $content]], 'temperature' => 0.3], JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES);
     $curl = curl_init($url);
-    curl_setopt_array($curl, [CURLOPT_POST => true, CURLOPT_RETURNTRANSFER => true, CURLOPT_TIMEOUT => 60, CURLOPT_CONNECTTIMEOUT => 10, CURLOPT_HTTPHEADER => ['Authorization: Bearer ' . $apiKey, 'Content-Type: application/json'], CURLOPT_POSTFIELDS => $payload]);
+    $resolvedIp = str_contains($endpoint['ip'], ':') ? '[' . $endpoint['ip'] . ']' : $endpoint['ip'];
+    curl_setopt_array($curl, [CURLOPT_POST => true, CURLOPT_RETURNTRANSFER => true, CURLOPT_TIMEOUT => 60, CURLOPT_CONNECTTIMEOUT => 10, CURLOPT_FOLLOWLOCATION => false, CURLOPT_PROTOCOLS => CURLPROTO_HTTPS, CURLOPT_RESOLVE => [$endpoint['host'] . ':' . $endpoint['port'] . ':' . $resolvedIp], CURLOPT_HTTPHEADER => ['Authorization: Bearer ' . $apiKey, 'Content-Type: application/json'], CURLOPT_POSTFIELDS => $payload]);
     $body = curl_exec($curl);
     $status = (int)curl_getinfo($curl, CURLINFO_RESPONSE_CODE);
     $error = curl_error($curl);
@@ -3149,14 +3217,20 @@ switch ($action) {
 
         if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             verify_csrf();
+            $rate = login_rate_state();
+            if ((int)$rate['count'] >= 5) {
+                render_login_page('登录尝试过多，请 15 分钟后再试。');
+            }
             $username = trim((string)($_POST['username'] ?? ''));
             $password = (string)($_POST['password'] ?? '');
             $user = one('SELECT * FROM users WHERE username = ?', [$username]);
 
             if (!$user || !password_verify($password, (string)$user['password_hash'])) {
+                login_rate_state(true);
                 render_login_page('用户名或密码不正确。', ['username' => $username]);
             }
 
+            login_rate_state(false, true);
             session_regenerate_id(true);
             $_SESSION['admin_id'] = (int)$user['id'];
             set_flash('success', '已登录后台。');
@@ -3214,8 +3288,8 @@ switch ($action) {
         $slugPrompt = trim((string)($_POST['ai_slug_prompt'] ?? ''));
         $summaryPrompt = trim((string)($_POST['ai_summary_prompt'] ?? ''));
         $polishPrompt = trim((string)($_POST['ai_polish_prompt'] ?? ''));
-        if (!filter_var($apiUrl, FILTER_VALIDATE_URL) || !in_array(str_lower_u((string)parse_url($apiUrl, PHP_URL_SCHEME)), ['http', 'https'], true) || $model === '' || $slugPrompt === '' || $summaryPrompt === '' || $polishPrompt === '') {
-            set_flash('error', '请填写有效的 API 地址、模型名称和提示词。');
+        if (validated_ai_endpoint($apiUrl) === null || $model === '' || $slugPrompt === '' || $summaryPrompt === '' || $polishPrompt === '') {
+            set_flash('error', 'API 地址必须使用 HTTPS 并解析到公网地址，同时请填写模型名称和提示词。');
             redirect_to(url_for('admin_ai'));
         }
         $values = ['ai_api_url' => $apiUrl, 'ai_model' => $model, 'ai_slug_prompt' => $slugPrompt, 'ai_summary_prompt' => $summaryPrompt, 'ai_polish_prompt' => $polishPrompt];
