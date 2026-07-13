@@ -100,6 +100,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 "CREATE TABLE IF NOT EXISTS comments(
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
                     post_id INTEGER NOT NULL,
+                    user_id INTEGER,
                     parent_id INTEGER,
                     reply_to_name TEXT NOT NULL DEFAULT '',
                     author_name TEXT NOT NULL,
@@ -113,6 +114,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                     created_at INTEGER NOT NULL,
                     updated_at INTEGER NOT NULL,
                     FOREIGN KEY(post_id) REFERENCES posts(id) ON DELETE CASCADE,
+                    FOREIGN KEY(user_id) REFERENCES users(id) ON DELETE SET NULL,
                     FOREIGN KEY(parent_id) REFERENCES comments(id) ON DELETE SET NULL
                 )"
             );
@@ -125,15 +127,24 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 $db->exec("ALTER TABLE comments ADD COLUMN reply_to_name TEXT NOT NULL DEFAULT ''");
                 $replyFieldsAdded = true;
             }
+            $userFieldAdded = false;
+            if (!update_has_column($db, 'comments', 'user_id')) {
+                $db->exec('ALTER TABLE comments ADD COLUMN user_id INTEGER REFERENCES users(id) ON DELETE SET NULL');
+                $userFieldAdded = true;
+            }
             $db->exec('CREATE INDEX IF NOT EXISTS idx_comments_post_public ON comments(post_id, status, created_at, id)');
             $db->exec('CREATE INDEX IF NOT EXISTS idx_comments_moderation ON comments(status, created_at DESC, id DESC)');
             $db->exec('CREATE INDEX IF NOT EXISTS idx_comments_unread ON comments(is_read, created_at DESC, id DESC)');
             $db->exec('CREATE INDEX IF NOT EXISTS idx_comments_ip_recent ON comments(ip_hash, created_at DESC)');
             $db->exec('CREATE INDEX IF NOT EXISTS idx_comments_parent ON comments(parent_id, created_at, id)');
+            $db->exec('CREATE INDEX IF NOT EXISTS idx_comments_user_recent ON comments(user_id, created_at DESC)');
             if (!$commentsExist) {
                 $changes[] = '新增评论数据表和查询索引';
             } elseif ($replyFieldsAdded) {
                 $changes[] = '新增评论回复字段和查询索引';
+            }
+            if ($userFieldAdded) {
+                $changes[] = '新增登录用户评论关联字段和查询索引';
             }
             $db->commit();
             $message = $changes ? '数据库升级完成：' . implode('、', $changes) . '。' : '数据库已经是最新版本，无需变更。';
@@ -165,7 +176,7 @@ if (!isset($_SESSION['csrf_token']) || !is_string($_SESSION['csrf_token']) || $_
       <div class="panel__body">
         <?php if ($message !== ''): ?><div class="flash flash--success"><?= update_h($message) ?></div><?php endif; ?>
         <?php if ($error !== ''): ?><div class="flash flash--error"><?= update_h($error) ?></div><?php endif; ?>
-        <p>本次升级将补齐文章置顶字段、评论数据表、回复字段和对应查询索引。操作可重复执行，不会覆盖现有内容。</p>
+        <p>本次升级将补齐文章置顶字段、评论数据表、回复字段、登录用户关联字段和对应查询索引。操作可重复执行，不会覆盖现有内容。</p>
         <form method="post">
           <input type="hidden" name="csrf_token" value="<?= update_h((string)$_SESSION['csrf_token']) ?>">
           <div class="form-actions">

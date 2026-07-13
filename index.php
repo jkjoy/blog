@@ -13,7 +13,7 @@ session_set_cookie_params([
 ]);
 session_start();
 
-const APP_VERSION = 'v1.1.1';
+const APP_VERSION = 'v1.1.2';
 const DATA_DIR = __DIR__ . '/data';
 const CACHE_DIR = __DIR__ . '/cache';
 const UPLOAD_DIR = __DIR__ . '/uploads';
@@ -118,10 +118,10 @@ function table_columns(PDO $pdo, string $table): array
     return $columns;
 }
 
-function ensure_comment_reply_columns(PDO $pdo): void
+function ensure_comment_columns(PDO $pdo): void
 {
     $columns = table_columns($pdo, 'comments');
-    if (isset($columns['parent_id'], $columns['reply_to_name'])) {
+    if (isset($columns['parent_id'], $columns['reply_to_name'], $columns['user_id'])) {
         return;
     }
 
@@ -134,6 +134,7 @@ function ensure_comment_reply_columns(PDO $pdo): void
         $columns = table_columns($pdo, 'comments');
         if (!isset($columns['parent_id'])) { $pdo->exec('ALTER TABLE comments ADD COLUMN parent_id INTEGER REFERENCES comments(id) ON DELETE SET NULL'); }
         if (!isset($columns['reply_to_name'])) { $pdo->exec("ALTER TABLE comments ADD COLUMN reply_to_name TEXT NOT NULL DEFAULT ''"); }
+        if (!isset($columns['user_id'])) { $pdo->exec('ALTER TABLE comments ADD COLUMN user_id INTEGER REFERENCES users(id) ON DELETE SET NULL'); }
         if ($ownsTransaction) {
             $pdo->commit();
         }
@@ -226,6 +227,7 @@ function ensure_schema(PDO $pdo): void
         "CREATE TABLE IF NOT EXISTS comments(
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             post_id INTEGER NOT NULL,
+            user_id INTEGER,
             parent_id INTEGER,
             reply_to_name TEXT NOT NULL DEFAULT '',
             author_name TEXT NOT NULL,
@@ -239,6 +241,7 @@ function ensure_schema(PDO $pdo): void
             created_at INTEGER NOT NULL,
             updated_at INTEGER NOT NULL,
             FOREIGN KEY(post_id) REFERENCES posts(id) ON DELETE CASCADE,
+            FOREIGN KEY(user_id) REFERENCES users(id) ON DELETE SET NULL,
             FOREIGN KEY(parent_id) REFERENCES comments(id) ON DELETE SET NULL
         )"
     );
@@ -253,7 +256,7 @@ function ensure_schema(PDO $pdo): void
     $linkColumns = table_columns($pdo, 'links');
     if (!isset($linkColumns['icon_url'])) { $pdo->exec("ALTER TABLE links ADD COLUMN icon_url TEXT NOT NULL DEFAULT ''"); }
 
-    ensure_comment_reply_columns($pdo);
+    ensure_comment_columns($pdo);
 
     if (!isset($columns['author_id'])) {
         $pdo->exec("ALTER TABLE posts ADD COLUMN author_id INTEGER");
@@ -296,6 +299,7 @@ function ensure_schema(PDO $pdo): void
     $pdo->exec('CREATE INDEX IF NOT EXISTS idx_comments_unread ON comments(is_read, created_at DESC, id DESC)');
     $pdo->exec('CREATE INDEX IF NOT EXISTS idx_comments_ip_recent ON comments(ip_hash, created_at DESC)');
     $pdo->exec('CREATE INDEX IF NOT EXISTS idx_comments_parent ON comments(parent_id, created_at, id)');
+    $pdo->exec('CREATE INDEX IF NOT EXISTS idx_comments_user_recent ON comments(user_id, created_at DESC)');
 
     $defaultCategoryId = (int)($pdo->query("SELECT id FROM categories WHERE slug = 'default' ORDER BY id LIMIT 1")->fetchColumn() ?: 0);
     if ($defaultCategoryId < 1) {
@@ -749,7 +753,36 @@ function current_admin(): ?array
         return $admin = null;
     }
 
-    return $admin = one('SELECT id, username, avatar_url, created_at FROM users WHERE id = ?', [$id]);
+    return $admin = one('SELECT id, username, nickname, email, avatar_url, website_url, created_at FROM users WHERE id = ?', [$id]);
+}
+
+function authenticated_comment_identity(): ?array
+{
+    $admin = current_admin();
+    if ($admin === null) {
+        return null;
+    }
+
+    $name = trim((string)($admin['nickname'] ?? '')) ?: trim((string)$admin['username']);
+    $name = trim((string)(preg_replace('/\s+/u', ' ', $name) ?? $name));
+    $name = str_sub_u($name, 0, 50);
+    $email = str_lower_u(trim((string)($admin['email'] ?? '')));
+    if ($email !== '' && (!filter_var($email, FILTER_VALIDATE_EMAIL) || strlen($email) > 160)) {
+        $email = '';
+    }
+
+    $url = trim((string)($admin['website_url'] ?? ''));
+    $scheme = str_lower_u((string)parse_url($url, PHP_URL_SCHEME));
+    if ($url !== '' && (strlen($url) > 300 || !filter_var($url, FILTER_VALIDATE_URL) || !in_array($scheme, ['http', 'https'], true))) {
+        $url = '';
+    }
+
+    return [
+        'user_id' => (int)$admin['id'],
+        'author_name' => $name,
+        'author_email' => $email,
+        'author_url' => $url,
+    ];
 }
 
 function is_admin(): bool
@@ -2110,7 +2143,7 @@ function record_comment_attempt(): bool
     return $allowed && $stored;
 }
 
-function validate_comment_input(array $input): array
+function validate_comment_input(array $input, bool $requireEmail = true): array
 {
     $name = trim((string)($input['author_name'] ?? ''));
     $name = trim((string)(preg_replace('/\s+/u', ' ', $name) ?? $name));
@@ -2129,7 +2162,7 @@ function validate_comment_input(array $input): array
 
     if ($name === '') { $errors[] = '请填写昵称。'; }
     elseif (str_len_u($name) > 50) { $errors[] = '昵称不能超过 50 个字符。'; }
-    if ($email === '' || !filter_var($email, FILTER_VALIDATE_EMAIL) || strlen($email) > 160) { $errors[] = '请填写有效的邮箱地址。'; }
+    if (($requireEmail && $email === '') || ($email !== '' && (!filter_var($email, FILTER_VALIDATE_EMAIL) || strlen($email) > 160))) { $errors[] = '请填写有效的邮箱地址。'; }
     if ($url !== '') {
         $scheme = str_lower_u((string)parse_url($url, PHP_URL_SCHEME));
         if (strlen($url) > 300 || !filter_var($url, FILTER_VALIDATE_URL) || !in_array($scheme, ['http', 'https'], true)) {
@@ -2148,17 +2181,19 @@ function validate_comment_input(array $input): array
     ], $errors];
 }
 
-function duplicate_comment_error(int $postId, int $parentId, string $email, string $content): string
+function duplicate_comment_error(int $postId, int $parentId, int $userId, string $email, string $content): string
 {
+    $identitySql = $userId > 0 ? 'user_id = ?' : 'user_id IS NULL AND author_email = ?';
+    $identityValue = $userId > 0 ? $userId : $email;
     if ($parentId > 0) {
         $duplicate = (int)val(
-            'SELECT COUNT(*) FROM comments WHERE post_id = ? AND parent_id = ? AND author_email = ? AND content = ? AND created_at >= ?',
-            [$postId, $parentId, $email, $content, time() - 86400]
+            'SELECT COUNT(*) FROM comments WHERE post_id = ? AND parent_id = ? AND ' . $identitySql . ' AND content = ? AND created_at >= ?',
+            [$postId, $parentId, $identityValue, $content, time() - 86400]
         );
     } else {
         $duplicate = (int)val(
-            'SELECT COUNT(*) FROM comments WHERE post_id = ? AND parent_id IS NULL AND author_email = ? AND content = ? AND created_at >= ?',
-            [$postId, $email, $content, time() - 86400]
+            'SELECT COUNT(*) FROM comments WHERE post_id = ? AND parent_id IS NULL AND ' . $identitySql . ' AND content = ? AND created_at >= ?',
+            [$postId, $identityValue, $content, time() - 86400]
         );
     }
     return $duplicate > 0 ? '这条评论已经提交过了。' : '';
@@ -2811,7 +2846,8 @@ function render_comments_section(array $post, array $form = [], array $errors = 
         return '';
     }
 
-    $identity = is_array($_SESSION['comment_identity'] ?? null) ? $_SESSION['comment_identity'] : [];
+    $authenticatedIdentity = authenticated_comment_identity();
+    $identity = $authenticatedIdentity ?? (is_array($_SESSION['comment_identity'] ?? null) ? $_SESSION['comment_identity'] : []);
     $values = array_merge([
         'author_name' => (string)($identity['author_name'] ?? ''),
         'author_email' => (string)($identity['author_email'] ?? ''),
@@ -2819,6 +2855,9 @@ function render_comments_section(array $post, array $form = [], array $errors = 
         'content' => '',
         'parent_id' => '',
     ], $form);
+    if ($authenticatedIdentity !== null) {
+        $values = array_merge($values, $authenticatedIdentity);
+    }
     $replyTarget = approved_reply_target($postId, (int)$values['parent_id']);
     $replyTargetId = (int)($replyTarget['id'] ?? 0);
     $replyTargetName = (string)($replyTarget['author_name'] ?? '');
@@ -2911,20 +2950,22 @@ function render_comments_section(array $post, array $form = [], array $errors = 
             </div>
           <?php endif; ?>
 
-          <div class="comment-form__grid">
-            <div class="comment-field">
-              <label for="comment-author">昵称</label>
-              <input id="comment-author" name="author_name" value="<?= h((string)$values['author_name']) ?>" maxlength="50" autocomplete="name"<?= $invalidFields['author_name'] ? ' aria-invalid="true" aria-describedby="comment-errors"' : '' ?> required>
+          <?php if ($authenticatedIdentity === null): ?>
+            <div class="comment-form__grid">
+              <div class="comment-field">
+                <label for="comment-author">昵称</label>
+                <input id="comment-author" name="author_name" value="<?= h((string)$values['author_name']) ?>" maxlength="50" autocomplete="name"<?= $invalidFields['author_name'] ? ' aria-invalid="true" aria-describedby="comment-errors"' : '' ?> required>
+              </div>
+              <div class="comment-field">
+                <label for="comment-email">邮箱</label>
+                <input id="comment-email" name="author_email" type="email" value="<?= h((string)$values['author_email']) ?>" maxlength="160" autocomplete="email"<?= $invalidFields['author_email'] ? ' aria-invalid="true" aria-describedby="comment-errors"' : '' ?> required>
+              </div>
+              <div class="comment-field comment-field--wide">
+                <label for="comment-url">网站（可选）</label>
+                <input id="comment-url" name="author_url" type="url" value="<?= h((string)$values['author_url']) ?>" maxlength="300" autocomplete="url" placeholder="https://example.com"<?= $invalidFields['author_url'] ? ' aria-invalid="true" aria-describedby="comment-errors"' : '' ?>>
+              </div>
             </div>
-            <div class="comment-field">
-              <label for="comment-email">邮箱</label>
-              <input id="comment-email" name="author_email" type="email" value="<?= h((string)$values['author_email']) ?>" maxlength="160" autocomplete="email"<?= $invalidFields['author_email'] ? ' aria-invalid="true" aria-describedby="comment-errors"' : '' ?> required>
-            </div>
-            <div class="comment-field comment-field--wide">
-              <label for="comment-url">网站（可选）</label>
-              <input id="comment-url" name="author_url" type="url" value="<?= h((string)$values['author_url']) ?>" maxlength="300" autocomplete="url" placeholder="https://example.com"<?= $invalidFields['author_url'] ? ' aria-invalid="true" aria-describedby="comment-errors"' : '' ?>>
-            </div>
-          </div>
+          <?php endif; ?>
           <div class="comment-field">
             <label for="comment-content">评论</label>
             <textarea id="comment-content" name="content" rows="6" maxlength="3000"<?= $invalidFields['content'] ? ' aria-invalid="true" aria-describedby="comment-errors"' : '' ?> required><?= h((string)$values['content']) ?></textarea>
@@ -4253,9 +4294,14 @@ switch ($action) {
             set_comment_notice($postId, 'error', '评论功能当前已关闭。');
             redirect_to($returnUrl);
         }
+        $authenticatedIdentity = authenticated_comment_identity();
+        $commentInput = $_POST;
+        if ($authenticatedIdentity !== null) {
+            $commentInput = array_merge($commentInput, $authenticatedIdentity);
+        }
         $startedAt = (int)($_POST['comment_started_at'] ?? 0);
         if (!record_comment_attempt()) {
-            [$comment] = validate_comment_input($_POST);
+            [$comment] = validate_comment_input($commentInput, $authenticatedIdentity === null);
             forget_comment_form($postId, $startedAt);
             set_comment_feedback($postId, $comment, ['提交过于频繁，请稍后再试。']);
             redirect_to($returnUrl);
@@ -4266,7 +4312,7 @@ switch ($action) {
             redirect_to($returnUrl);
         }
 
-        [$comment, $commentErrors] = validate_comment_input($_POST);
+        [$comment, $commentErrors] = validate_comment_input($commentInput, $authenticatedIdentity === null);
         $parentId = (int)$comment['parent_id'];
         $replyTarget = approved_reply_target($postId, $parentId);
         if ($parentId > 0 && $replyTarget === null) {
@@ -4288,8 +4334,10 @@ switch ($action) {
         $status = $needsApproval ? 'pending' : 'approved';
         $isRead = setting('comments_notify', '1') === '1' ? 0 : 1;
         $now = time();
+        $userId = (int)($authenticatedIdentity['user_id'] ?? 0);
         $insertParams = [
             $postId,
+            $userId > 0 ? $userId : null,
             $comment['author_name'],
             $comment['author_email'],
             $comment['author_url'],
@@ -4303,9 +4351,11 @@ switch ($action) {
         ];
         $database = db();
         $duplicateCutoff = time() - 86400;
+        $duplicateIdentitySql = $userId > 0 ? 'duplicate.user_id = ?' : 'duplicate.user_id IS NULL AND duplicate.author_email = ?';
+        $duplicateIdentityValue = $userId > 0 ? $userId : $comment['author_email'];
         try {
             $database->exec('BEGIN IMMEDIATE');
-            $duplicateError = duplicate_comment_error($postId, $parentId, $comment['author_email'], $comment['content']);
+            $duplicateError = duplicate_comment_error($postId, $parentId, $userId, $comment['author_email'], $comment['content']);
             if ($duplicateError !== '') {
                 $database->rollBack();
                 set_comment_feedback($postId, $comment, [$duplicateError]);
@@ -4314,16 +4364,16 @@ switch ($action) {
 
             if ($parentId > 0) {
                 $inserted = q(
-                    "INSERT INTO comments(post_id, parent_id, reply_to_name, author_name, author_email, author_url, content, status, is_read, ip_hash, user_agent, created_at, updated_at)
-                     SELECT ?, parent.id, parent.author_name, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?
+                    "INSERT INTO comments(post_id, user_id, parent_id, reply_to_name, author_name, author_email, author_url, content, status, is_read, ip_hash, user_agent, created_at, updated_at)
+                     SELECT ?, ?, parent.id, parent.author_name, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?
                      FROM comments parent
                      WHERE parent.id = ? AND parent.post_id = ? AND parent.status = 'approved'
                        AND NOT EXISTS (
                            SELECT 1 FROM comments duplicate
                            WHERE duplicate.post_id = ? AND COALESCE(duplicate.parent_id, 0) = parent.id
-                             AND duplicate.author_email = ? AND duplicate.content = ? AND duplicate.created_at >= ?
+                             AND {$duplicateIdentitySql} AND duplicate.content = ? AND duplicate.created_at >= ?
                        )",
-                    array_merge($insertParams, [$parentId, $postId, $postId, $comment['author_email'], $comment['content'], $duplicateCutoff])
+                    array_merge($insertParams, [$parentId, $postId, $postId, $duplicateIdentityValue, $comment['content'], $duplicateCutoff])
                 )->rowCount();
                 if ($inserted !== 1) {
                     $targetStillAvailable = approved_reply_target($postId, $parentId) !== null;
@@ -4339,14 +4389,14 @@ switch ($action) {
                 }
             } else {
                 $inserted = q(
-                    "INSERT INTO comments(post_id, parent_id, reply_to_name, author_name, author_email, author_url, content, status, is_read, ip_hash, user_agent, created_at, updated_at)
-                     SELECT ?, NULL, '', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?
+                    "INSERT INTO comments(post_id, user_id, parent_id, reply_to_name, author_name, author_email, author_url, content, status, is_read, ip_hash, user_agent, created_at, updated_at)
+                     SELECT ?, ?, NULL, '', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?
                      WHERE NOT EXISTS (
                          SELECT 1 FROM comments duplicate
                          WHERE duplicate.post_id = ? AND COALESCE(duplicate.parent_id, 0) = 0
-                           AND duplicate.author_email = ? AND duplicate.content = ? AND duplicate.created_at >= ?
+                           AND {$duplicateIdentitySql} AND duplicate.content = ? AND duplicate.created_at >= ?
                      )",
-                    array_merge($insertParams, [$postId, $comment['author_email'], $comment['content'], $duplicateCutoff])
+                    array_merge($insertParams, [$postId, $duplicateIdentityValue, $comment['content'], $duplicateCutoff])
                 )->rowCount();
                 if ($inserted !== 1) {
                     $database->rollBack();
@@ -4361,11 +4411,13 @@ switch ($action) {
             }
             throw $exception;
         }
-        $_SESSION['comment_identity'] = [
-            'author_name' => $comment['author_name'],
-            'author_email' => $comment['author_email'],
-            'author_url' => $comment['author_url'],
-        ];
+        if ($authenticatedIdentity === null) {
+            $_SESSION['comment_identity'] = [
+                'author_name' => $comment['author_name'],
+                'author_email' => $comment['author_email'],
+                'author_url' => $comment['author_url'],
+            ];
+        }
         set_comment_notice($postId, 'success', $status === 'approved' ? '评论已发布。' : '评论已提交，审核通过后会显示。');
         redirect_to($returnUrl);
         break;

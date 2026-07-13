@@ -235,7 +235,7 @@ function i_render_page(string $title, string $body): void
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title><?= i_h($title) ?></title>
-  <link rel="stylesheet" href="<?= i_h(i_asset_url('index.css')) ?>?v=v1.1.1">
+  <link rel="stylesheet" href="<?= i_h(i_asset_url('index.css')) ?>?v=v1.1.2">
 </head>
 <body>
   <div class="site-frame">
@@ -303,6 +303,11 @@ function i_render_form(array $form, array $errors = []): void
                 <label for="author_name">管理员昵称</label>
                 <input id="author_name" name="author_name" type="text" value="<?= i_h((string)$form['author_name']) ?>" required>
               </div>
+            </div>
+
+            <div class="field">
+              <label for="admin_email">管理员邮箱</label>
+              <input id="admin_email" name="admin_email" type="email" value="<?= i_h((string)$form['admin_email']) ?>" maxlength="160" autocomplete="email" required>
             </div>
 
             <div class="field">
@@ -426,6 +431,7 @@ $form = [
     'site_tagline' => 'A small PHP blog running on one main entry file.',
     'admin_username' => 'admin',
     'author_name' => 'Admin',
+    'admin_email' => '',
     'welcome_title' => '欢迎来到你的新博客',
     'welcome_body' => i_sample_body('Simple PHP Blog'),
     'pretty_url' => '0',
@@ -440,6 +446,7 @@ $form = [
     'site_tagline' => trim((string)($_POST['site_tagline'] ?? '')),
     'admin_username' => trim((string)($_POST['admin_username'] ?? 'admin')),
     'author_name' => trim((string)($_POST['author_name'] ?? 'Admin')),
+    'admin_email' => strtolower(trim((string)($_POST['admin_email'] ?? ''))),
     'welcome_title' => trim((string)($_POST['welcome_title'] ?? '欢迎来到你的新博客')),
     'welcome_body' => trim((string)($_POST['welcome_body'] ?? '')),
     'pretty_url' => (string)($_POST['pretty_url'] ?? '0') === '1' ? '1' : '0',
@@ -467,6 +474,10 @@ if ($form['admin_username'] === '') {
 
 if ($form['author_name'] === '') {
     $errors[] = '作者显示名不能为空。';
+}
+
+if ($form['admin_email'] === '' || strlen($form['admin_email']) > 160 || !filter_var($form['admin_email'], FILTER_VALIDATE_EMAIL)) {
+    $errors[] = '请填写有效的管理员邮箱地址。';
 }
 
 if ($password === '') {
@@ -540,6 +551,7 @@ $db->exec(
     'CREATE TABLE IF NOT EXISTS comments(
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         post_id INTEGER NOT NULL,
+        user_id INTEGER,
         parent_id INTEGER,
         reply_to_name TEXT NOT NULL DEFAULT \'\',
         author_name TEXT NOT NULL,
@@ -553,6 +565,7 @@ $db->exec(
         created_at INTEGER NOT NULL,
         updated_at INTEGER NOT NULL,
         FOREIGN KEY(post_id) REFERENCES posts(id) ON DELETE CASCADE,
+        FOREIGN KEY(user_id) REFERENCES users(id) ON DELETE SET NULL,
         FOREIGN KEY(parent_id) REFERENCES comments(id) ON DELETE SET NULL
     )'
 );
@@ -564,6 +577,7 @@ $db->exec('CREATE INDEX IF NOT EXISTS idx_comments_moderation ON comments(status
 $db->exec('CREATE INDEX IF NOT EXISTS idx_comments_unread ON comments(is_read, created_at DESC, id DESC)');
 $db->exec('CREATE INDEX IF NOT EXISTS idx_comments_ip_recent ON comments(ip_hash, created_at DESC)');
 $db->exec('CREATE INDEX IF NOT EXISTS idx_comments_parent ON comments(parent_id, created_at, id)');
+$db->exec('CREATE INDEX IF NOT EXISTS idx_comments_user_recent ON comments(user_id, created_at DESC)');
 
 $now = time();
 $settings = i_default_settings();
@@ -578,7 +592,7 @@ foreach ($settings as $name => $value) {
 }
 
 $db->prepare('INSERT INTO users(username, password_hash, nickname, email, avatar_url, website_url, social_links, created_at) VALUES(?, ?, ?, ?, ?, ?, ?, ?)')
-    ->execute([$form['admin_username'], password_hash($password, PASSWORD_DEFAULT), $form['author_name'], '', '', '', '', $now]);
+    ->execute([$form['admin_username'], password_hash($password, PASSWORD_DEFAULT), $form['author_name'], $form['admin_email'], '', '', '', $now]);
 $defaultAuthorId = (int)$db->lastInsertId();
 
 $db->prepare('INSERT INTO categories(name, slug, description, sort_order, created_at, updated_at) VALUES(?, ?, ?, ?, ?, ?)')
