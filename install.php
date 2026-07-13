@@ -515,6 +515,7 @@ $db->exec(
         kind TEXT NOT NULL DEFAULT \'post\',
         tags TEXT NOT NULL DEFAULT \'[]\',
         views INTEGER NOT NULL DEFAULT 0,
+        is_pinned INTEGER NOT NULL DEFAULT 0,
         status TEXT NOT NULL DEFAULT \'draft\',
         published_at INTEGER NOT NULL DEFAULT 0,
         created_at INTEGER NOT NULL,
@@ -532,7 +533,7 @@ $db->exec(
         updated_at INTEGER NOT NULL
     )'
 );
-$db->exec('CREATE INDEX IF NOT EXISTS idx_posts_published ON posts(kind, status, published_at DESC, id DESC)');
+$db->exec('CREATE INDEX IF NOT EXISTS idx_posts_published_pinned ON posts(kind, status, is_pinned DESC, published_at DESC, id DESC)');
 $db->exec('CREATE INDEX IF NOT EXISTS idx_posts_category ON posts(category_id, kind, status, published_at DESC)');
 $db->exec('CREATE INDEX IF NOT EXISTS idx_categories_sort ON categories(sort_order ASC, id DESC)');
 

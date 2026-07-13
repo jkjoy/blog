@@ -13,13 +13,15 @@ session_set_cookie_params([
 ]);
 session_start();
 
-const APP_VERSION = 'v1.0.2';
+const APP_VERSION = 'v1.0.3';
 const DATA_DIR = __DIR__ . '/data';
 const CACHE_DIR = __DIR__ . '/cache';
 const UPLOAD_DIR = __DIR__ . '/uploads';
 const DB_CONFIG_FILE = DATA_DIR . '/config.php';
 const INSTALL_LOCK_FILE = DATA_DIR . '/install.lock';
 const SETTINGS_CACHE_FILE = CACHE_DIR . '/settings.php';
+const UPDATE_REPOSITORY = 'jkjoy/Simple-PHP-Blog';
+const UPDATE_CACHE_FILE = CACHE_DIR . '/github-update.json';
 
 function db_file_path(): string
 {
@@ -158,6 +160,7 @@ function ensure_schema(PDO $pdo): void
             kind TEXT NOT NULL DEFAULT 'post',
             tags TEXT NOT NULL DEFAULT '[]',
             views INTEGER NOT NULL DEFAULT 0,
+            is_pinned INTEGER NOT NULL DEFAULT 0,
             status TEXT NOT NULL DEFAULT 'draft',
             published_at INTEGER NOT NULL DEFAULT 0,
             created_at INTEGER NOT NULL,
@@ -224,15 +227,19 @@ function ensure_schema(PDO $pdo): void
     if (!isset($columns['views'])) {
         $pdo->exec("ALTER TABLE posts ADD COLUMN views INTEGER NOT NULL DEFAULT 0");
     }
+    if (!isset($columns['is_pinned'])) {
+        $pdo->exec("ALTER TABLE posts ADD COLUMN is_pinned INTEGER NOT NULL DEFAULT 0");
+    }
 
     $pdo->exec("UPDATE posts SET kind = 'post' WHERE kind IS NULL OR trim(kind) = ''");
     $pdo->exec("UPDATE posts SET tags = '[]' WHERE tags IS NULL OR trim(tags) = ''");
     $pdo->exec("UPDATE posts SET views = 0 WHERE views IS NULL");
+    $pdo->exec("UPDATE posts SET is_pinned = 0 WHERE is_pinned IS NULL");
     $defaultAuthorId = (int)($pdo->query('SELECT id FROM users ORDER BY id ASC LIMIT 1')->fetchColumn() ?: 0);
     if ($defaultAuthorId > 0) {
         $pdo->prepare('UPDATE posts SET author_id = ? WHERE author_id IS NULL OR author_id NOT IN (SELECT id FROM users)')->execute([$defaultAuthorId]);
     }
-    $pdo->exec('CREATE INDEX IF NOT EXISTS idx_posts_public ON posts(kind, status, published_at DESC, id DESC)');
+    $pdo->exec('CREATE INDEX IF NOT EXISTS idx_posts_public_pinned ON posts(kind, status, is_pinned DESC, published_at DESC, id DESC)');
     $pdo->exec('CREATE INDEX IF NOT EXISTS idx_posts_kind_updated ON posts(kind, updated_at DESC, id DESC)');
     $pdo->exec('CREATE INDEX IF NOT EXISTS idx_posts_category ON posts(category_id, kind, status, published_at DESC)');
     $pdo->exec('CREATE INDEX IF NOT EXISTS idx_categories_sort ON categories(sort_order ASC, id DESC)');
@@ -397,6 +404,94 @@ function verify_csrf(): void
 
     if ($sessionToken === '' || !hash_equals($sessionToken, $token)) {
         simple_error_page('请求已失效', '请刷新页面后重试。', 422);
+    }
+}
+
+function github_update_info(bool $refresh = false): array
+{
+    ensure_runtime_dirs();
+    if (!$refresh && is_file(UPDATE_CACHE_FILE) && time() - (int)filemtime(UPDATE_CACHE_FILE) < 21600) {
+        $cached = json_decode((string)file_get_contents(UPDATE_CACHE_FILE), true);
+        if (is_array($cached)) { return $cached; }
+    }
+    $result = ['available' => false, 'current' => APP_VERSION, 'latest' => '', 'download_url' => '', 'error' => ''];
+    if (!function_exists('curl_init')) {
+        $result['error'] = '服务器未启用 cURL，无法检查更新。';
+        return $result;
+    }
+    $curl = curl_init('https://api.github.com/repos/' . UPDATE_REPOSITORY . '/releases/latest');
+    curl_setopt_array($curl, [CURLOPT_RETURNTRANSFER => true, CURLOPT_FOLLOWLOCATION => true, CURLOPT_CONNECTTIMEOUT => 3, CURLOPT_TIMEOUT => 8, CURLOPT_USERAGENT => 'Simple-PHP-Blog/' . APP_VERSION, CURLOPT_HTTPHEADER => ['Accept: application/vnd.github+json']]);
+    $body = curl_exec($curl);
+    $status = (int)curl_getinfo($curl, CURLINFO_RESPONSE_CODE);
+    $curlError = curl_error($curl);
+    curl_close($curl);
+    $release = is_string($body) ? json_decode($body, true) : null;
+    if ($status !== 200 || !is_array($release)) {
+        $result['error'] = $curlError !== '' ? $curlError : 'GitHub 暂时无法访问。';
+    } else {
+        $latest = trim((string)($release['tag_name'] ?? ''));
+        $download = (string)($release['zipball_url'] ?? '');
+        if ($latest !== '' && filter_var($download, FILTER_VALIDATE_URL)) {
+            $result['latest'] = $latest;
+            $result['download_url'] = $download;
+            $result['available'] = version_compare(ltrim($latest, 'vV'), ltrim(APP_VERSION, 'vV'), '>');
+        }
+    }
+    file_put_contents(UPDATE_CACHE_FILE, json_encode($result, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES), LOCK_EX);
+    return $result;
+}
+
+function install_github_update(array $update): string
+{
+    if (empty($update['available']) || !filter_var((string)($update['download_url'] ?? ''), FILTER_VALIDATE_URL)) { throw new RuntimeException('当前没有可安装的更新。'); }
+    if (!class_exists('ZipArchive')) { throw new RuntimeException('服务器未启用 ZipArchive，无法解压更新包。'); }
+    ensure_runtime_dirs();
+    $workDir = CACHE_DIR . '/update-' . bin2hex(random_bytes(6));
+    $zipFile = $workDir . '/release.zip';
+    if (!mkdir($workDir, 0755, true) && !is_dir($workDir)) { throw new RuntimeException('无法创建更新临时目录。'); }
+    try {
+        $handle = fopen($zipFile, 'wb');
+        if ($handle === false) { throw new RuntimeException('无法创建更新包。'); }
+        $curl = curl_init((string)$update['download_url']);
+        curl_setopt_array($curl, [CURLOPT_FILE => $handle, CURLOPT_FOLLOWLOCATION => true, CURLOPT_CONNECTTIMEOUT => 5, CURLOPT_TIMEOUT => 60, CURLOPT_USERAGENT => 'Simple-PHP-Blog/' . APP_VERSION]);
+        $ok = curl_exec($curl);
+        $status = (int)curl_getinfo($curl, CURLINFO_RESPONSE_CODE);
+        $error = curl_error($curl);
+        curl_close($curl);
+        fclose($handle);
+        if (!$ok || $status !== 200) { throw new RuntimeException('更新包下载失败：' . ($error ?: 'HTTP ' . $status)); }
+        $zip = new ZipArchive();
+        if ($zip->open($zipFile) !== true || !$zip->extractTo($workDir . '/source')) { throw new RuntimeException('更新包无法解压。'); }
+        $zip->close();
+        $roots = glob($workDir . '/source/*', GLOB_ONLYDIR) ?: [];
+        $source = (string)($roots[0] ?? '');
+        $newIndex = $source . '/index.php';
+        if (!is_file($newIndex)) { throw new RuntimeException('更新包结构无效。'); }
+        $code = (string)file_get_contents($newIndex);
+        if (!preg_match("/const APP_VERSION = '([^']+)'/", $code, $match) || !version_compare(ltrim($match[1], 'vV'), ltrim(APP_VERSION, 'vV'), '>')) { throw new RuntimeException('更新包版本无效或不高于当前版本。'); }
+        $files = ['index.php', 'index.css', 'index.js', 'install.php', 'update.php', 'README.md', 'logo.png', '.htaccess'];
+        $backup = CACHE_DIR . '/update-backup-' . date('Ymd-His');
+        mkdir($backup, 0755, true);
+        $replaced = [];
+        try {
+            foreach ($files as $file) {
+                $from = $source . '/' . $file;
+                if (!is_file($from)) { continue; }
+                $target = __DIR__ . '/' . $file;
+                if (is_file($target) && !copy($target, $backup . '/' . str_replace('/', '_', $file))) { throw new RuntimeException('无法备份 ' . $file); }
+                if (!copy($from, $target)) { throw new RuntimeException('无法覆盖 ' . $file); }
+                $replaced[] = $file;
+            }
+        } catch (Throwable $exception) {
+            foreach ($replaced as $file) { $saved = $backup . '/' . str_replace('/', '_', $file); if (is_file($saved)) { copy($saved, __DIR__ . '/' . $file); } }
+            throw $exception;
+        }
+        @unlink(UPDATE_CACHE_FILE);
+        return (string)$match[1];
+    } finally {
+        $items = is_dir($workDir) ? new RecursiveIteratorIterator(new RecursiveDirectoryIterator($workDir, FilesystemIterator::SKIP_DOTS), RecursiveIteratorIterator::CHILD_FIRST) : [];
+        foreach ($items as $item) { $item->isDir() ? @rmdir($item->getPathname()) : @unlink($item->getPathname()); }
+        if (is_dir($workDir)) { @rmdir($workDir); }
     }
 }
 
@@ -809,6 +904,7 @@ function url_for(string $route, array $params = []): string
         'upload_attachment' => script_url() . '?a=upload_attachment',
         'delete_post' => script_url() . '?a=delete_post',
         'change_status' => script_url() . '?a=change_status',
+        'install_update' => script_url() . '?a=install_update',
         default => script_url(),
     };
 }
@@ -1307,7 +1403,7 @@ function fetch_published_posts(int $limit, int $offset): array
     $offset = max(0, $offset);
 
     return all_rows(
-        'SELECT * FROM posts WHERE kind = ? AND status = ? AND published_at <= ? ORDER BY published_at DESC, id DESC LIMIT ' . $limit . ' OFFSET ' . $offset,
+        'SELECT * FROM posts WHERE kind = ? AND status = ? AND published_at <= ? ORDER BY is_pinned DESC, published_at DESC, id DESC LIMIT ' . $limit . ' OFFSET ' . $offset,
         ['post', 'published', time()]
     );
 }
@@ -1436,7 +1532,7 @@ function validate_category_input(array $input, ?array $existing = null): array
 
 function fetch_archive_posts(): array
 {
-    return all_rows('SELECT id, slug, title, published_at, tags, kind FROM posts WHERE kind = ? AND status = ? AND published_at <= ? ORDER BY published_at DESC, id DESC', ['post', 'published', time()]);
+    return all_rows('SELECT id, slug, title, published_at, tags, kind, is_pinned FROM posts WHERE kind = ? AND status = ? AND published_at <= ? ORDER BY published_at DESC, id DESC', ['post', 'published', time()]);
 }
 
 function archive_groups(): array
@@ -1490,7 +1586,7 @@ function render_public_post_list(array $posts): string
       <div class="posts">
         <div class="post">
           <div class="time"><?= h(date('F j, Y', (int)$post['published_at'])) ?></div>
-          <a href="<?= h(url_for('post', ['slug' => (string)$post['slug']])) ?>"><?= h((string)$post['title']) ?></a>
+          <a href="<?= h(url_for('post', ['slug' => (string)$post['slug']])) ?>"><?php if (!empty($post['is_pinned'])): ?><span class="pinned-badge">置顶</span><?php endif; ?><?= h((string)$post['title']) ?></a>
         </div>
       </div>
     <?php endforeach; ?>
@@ -1610,7 +1706,7 @@ function fetch_posts_by_tag_slug(string $slug): array
     }
 
     $matches = [];
-    $posts = all_rows('SELECT * FROM posts WHERE kind = ? AND status = ? AND published_at <= ? ORDER BY published_at DESC, id DESC', ['post', 'published', time()]);
+    $posts = all_rows('SELECT * FROM posts WHERE kind = ? AND status = ? AND published_at <= ? ORDER BY is_pinned DESC, published_at DESC, id DESC', ['post', 'published', time()]);
 
     foreach ($posts as $post) {
         foreach (tag_descriptors($post) as $tag) {
@@ -1645,6 +1741,7 @@ function validate_post_input(array $input, ?array $existing = null): array
     $tagsInput = trim((string)($input['tags_input'] ?? ''));
     $status = (string)($input['status'] ?? 'draft');
     $publishedInput = trim((string)($input['published_at'] ?? ''));
+    $isPinned = isset($input['is_pinned']) && (string)$input['is_pinned'] === '1' ? 1 : 0;
     $errors = [];
 
     if ($title === '') {
@@ -1691,6 +1788,7 @@ function validate_post_input(array $input, ?array $existing = null): array
         'tags' => $tags,
         'status' => $status,
         'published_at' => $publishedAt,
+        'is_pinned' => $kind === 'post' ? $isPinned : 0,
     ], $errors];
 }
 
@@ -1746,16 +1844,18 @@ function render_layout(string $title, string $content, array $options = []): voi
           <a class="<?= $active === 'tags' ? 'is-active' : '' ?>" href="<?= h(url_for('tags')) ?>">[标签]</a>
           <a class="<?= $active === 'archives' ? 'is-active' : '' ?>" href="<?= h(url_for('archives')) ?>">[归档]</a>
           <a class="<?= $active === 'links' ? 'is-active' : '' ?>" href="<?= h(url_for('links')) ?>">[链接]</a>
+          <?php $accountUrl = $admin ? url_for('admin') : url_for('login'); ?>
+          <?php $accountLabel = $admin ? '管理' : '登录'; ?>
           <?php $loginLinkRendered = false; ?>
           <?php foreach ($navPages as $page): ?>
             <a class="<?= $active === 'page:' . $page['slug'] ? 'is-active' : '' ?>" href="<?= h(content_permalink($page)) ?>">[<?= h($page['title']) ?>]</a>
             <?php if (!$loginLinkRendered && (strtolower((string)$page['slug']) === 'about' || trim((string)$page['title']) === '关于')): ?>
-              <a class="<?= $active === 'login' ? 'is-active' : '' ?>" href="<?= h(url_for('login')) ?>">[登录]</a>
+              <a class="<?= in_array($active, ['login', 'admin'], true) ? 'is-active' : '' ?>" href="<?= h($accountUrl) ?>">[<?= h($accountLabel) ?>]</a>
               <?php $loginLinkRendered = true; ?>
             <?php endif; ?>
           <?php endforeach; ?>
           <?php if (!$loginLinkRendered): ?>
-            <a class="<?= $active === 'login' ? 'is-active' : '' ?>" href="<?= h(url_for('login')) ?>">[登录]</a>
+            <a class="<?= in_array($active, ['login', 'admin'], true) ? 'is-active' : '' ?>" href="<?= h($accountUrl) ?>">[<?= h($accountLabel) ?>]</a>
           <?php endif; ?>
         </nav>
         <div class="cmd-echo"><span class="prompt-part">visitor@<?= h($siteName) ?></span><span class="path-part">:~</span>$ cat <?= h(strtolower(str_replace(' ', '-', $title))) ?>.md</div>
@@ -1785,7 +1885,7 @@ function render_layout(string $title, string $content, array $options = []): voi
             <img class="site-brand__logo" src="<?= h(theme_logo_url()) ?>" width="44" height="44" alt="<?= h($siteName) ?>">
             <span class="site-brand__copy">
               <strong class="site-brand__title"><?= h($siteName) ?></strong>
-              <span class="site-brand__meta"><?= $admin ? 'Blog Admin' : 'Admin Entry' ?></span>
+              <span class="site-brand__meta"><?= $admin ? 'Simple-PHP-Blog Admin' : 'Admin Entry' ?></span>
             </span>
           </a>
           <?php if ($admin): ?>
@@ -2311,7 +2411,7 @@ function render_category_page(string $slug): void
     $category = one('SELECT * FROM categories WHERE slug = ?', [trim($slug)]);
     if (!$category) { simple_error_page('分类不存在', '没有找到这个文章分类。', 404); }
     $posts = all_rows(
-        'SELECT * FROM posts WHERE kind = ? AND category_id = ? AND status = ? AND published_at <= ? ORDER BY published_at DESC, id DESC',
+        'SELECT * FROM posts WHERE kind = ? AND category_id = ? AND status = ? AND published_at <= ? ORDER BY is_pinned DESC, published_at DESC, id DESC',
         ['post', (int)$category['id'], 'published', time()]
     );
     ob_start(); ?>
@@ -2403,6 +2503,7 @@ function render_admin_page(): void
     require_admin();
 
     $metrics = admin_metrics();
+    $update = github_update_info();
     $sidebar = render_admin_sidebar('admin');
 
     ob_start();
@@ -2414,6 +2515,16 @@ function render_admin_page(): void
         <?= render_admin_topbar('博客数据预览') ?>
 
         <div class="admin-grid">
+          <?php if (!empty($update['available'])): ?>
+            <section class="panel update-notice admin-animate">
+              <div class="panel__body">
+                <div><strong>发现新版本 <?= h((string)$update['latest']) ?></strong><p>当前版本 <?= h(APP_VERSION) ?>。更新会自动备份并覆盖程序文件，站点数据和上传文件不受影响。</p></div>
+                <form method="post" action="<?= h(url_for('install_update')) ?>" onsubmit="return confirm('确定更新到 <?= h((string)$update['latest']) ?> 吗？更新期间请勿关闭页面。');">
+                  <?= csrf_field() ?><button class="button button--primary" type="submit">立即更新</button>
+                </form>
+              </div>
+            </section>
+          <?php endif; ?>
           <section class="panel admin-list-panel admin-animate admin-animate--3">
             <div class="panel__header">
               <h2>博客概览</h2>
@@ -2582,6 +2693,7 @@ function render_admin_posts_page(): void
                       <td>
                         <div class="table-title">
                           <strong><a href="<?= h(url_for('edit', ['id' => $post['id']])) ?>"><?= h($post['title']) ?></a></strong>
+                          <?php if (!empty($post['is_pinned']) && content_kind($post) === 'post'): ?><span class="admin-pinned-badge">置顶</span><?php endif; ?>
                         </div>
                       </td>
                       <td><span class="status-badge status-badge--<?= h($state['class']) ?>"><?= h($state['label']) ?></span></td>
@@ -3001,6 +3113,7 @@ function render_editor_page(?array $existing = null, array $form = [], array $er
         'content' => (string)($existing['content'] ?? ''),
         'status' => (string)($existing['status'] ?? 'draft'),
         'published_at' => $existing ? datetime_local_value((int)($existing['published_at'] ?: time())) : datetime_local_value(time()),
+        'is_pinned' => (string)(int)($existing['is_pinned'] ?? 0),
     ];
 
     $values = array_merge($defaults, $form);
@@ -3100,6 +3213,11 @@ function render_editor_page(?array $existing = null, array $form = [], array $er
                 </select>
                 <p class="field-hint">如果发布时间晚于当前时间，前台会按定时发布处理。</p>
               </div>
+
+              <label class="pin-option" for="is_pinned">
+                <input id="is_pinned" name="is_pinned" type="checkbox" value="1"<?= (string)$values['is_pinned'] === '1' ? ' checked' : '' ?>>
+                <span><strong>置顶文章</strong><small>发布后优先显示在前端文章列表顶部，仅对文章生效。</small></span>
+              </label>
 
               <div class="field">
                 <div class="field-label-row"><label for="content">正文</label><button class="button button--ghost button--compact" type="button" data-ai-action="polish">AI 润色</button></div>
@@ -3248,6 +3366,19 @@ switch ($action) {
 
     case 'admin':
         render_admin_page();
+        break;
+
+    case 'install_update':
+        require_admin();
+        if ($_SERVER['REQUEST_METHOD'] !== 'POST') { redirect_to(url_for('admin')); }
+        verify_csrf();
+        try {
+            $version = install_github_update(github_update_info(true));
+            set_flash('success', '已更新到 ' . $version . '。如版本包含数据库变更，请继续访问 update.php。');
+        } catch (Throwable $exception) {
+            set_flash('error', '更新失败：' . $exception->getMessage());
+        }
+        redirect_to(url_for('admin'));
         break;
 
     case 'admin_posts':
@@ -3534,7 +3665,7 @@ switch ($action) {
             if (!$errors) {
                 $now = time();
                 q(
-                    'INSERT INTO posts(author_id, kind, category_id, slug, title, tags, excerpt, content, status, published_at, created_at, updated_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?)',
+                    'INSERT INTO posts(author_id, kind, category_id, slug, title, tags, excerpt, content, status, published_at, is_pinned, created_at, updated_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)',
                     [
                         (int)(current_admin()['id'] ?? 0),
                         $data['kind'],
@@ -3546,6 +3677,7 @@ switch ($action) {
                         $data['content'],
                         $data['status'],
                         $data['published_at'],
+                        $data['is_pinned'],
                         $now,
                         $now,
                     ]
@@ -3564,6 +3696,7 @@ switch ($action) {
                 'content' => (string)($_POST['content'] ?? ''),
                 'status' => (string)($_POST['status'] ?? 'draft'),
                 'published_at' => (string)($_POST['published_at'] ?? ''),
+                'is_pinned' => isset($_POST['is_pinned']) ? '1' : '0',
             ], $errors);
         }
         render_editor_page();
@@ -3581,7 +3714,7 @@ switch ($action) {
             [$data, $errors] = validate_post_input($_POST, $post);
             if (!$errors) {
                 q(
-                    'UPDATE posts SET kind = ?, category_id = ?, slug = ?, title = ?, tags = ?, excerpt = ?, content = ?, status = ?, published_at = ?, updated_at = ? WHERE id = ?',
+                    'UPDATE posts SET kind = ?, category_id = ?, slug = ?, title = ?, tags = ?, excerpt = ?, content = ?, status = ?, published_at = ?, is_pinned = ?, updated_at = ? WHERE id = ?',
                     [
                         $data['kind'],
                         $data['category_id'],
@@ -3592,6 +3725,7 @@ switch ($action) {
                         $data['content'],
                         $data['status'],
                         $data['published_at'],
+                        $data['is_pinned'],
                         time(),
                         $id,
                     ]
@@ -3609,6 +3743,7 @@ switch ($action) {
                 'content' => (string)($_POST['content'] ?? ''),
                 'status' => (string)($_POST['status'] ?? 'draft'),
                 'published_at' => (string)($_POST['published_at'] ?? ''),
+                'is_pinned' => isset($_POST['is_pinned']) ? '1' : '0',
             ], $errors);
         }
         render_editor_page($post);

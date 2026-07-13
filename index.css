@@ -2266,9 +2266,82 @@ textarea:focus {
   color: var(--danger);
 }
 
+.theme-admin .admin-pinned-badge {
+  display: inline-flex;
+  align-items: center;
+  margin-top: 5px;
+  padding: 2px 6px;
+  border-radius: 4px;
+  background: #fef3f2;
+  color: var(--admin-danger);
+  font: 600 11px/1.4 var(--font-ui);
+}
+
+.theme-admin .update-notice .panel__body {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 20px;
+  background: #f0fdf4;
+  color: var(--admin-text);
+}
+
+.theme-admin .update-notice p {
+  margin: 4px 0 0;
+  color: var(--admin-muted);
+}
+
+.theme-admin .update-notice form {
+  flex: 0 0 auto;
+  margin: 0;
+}
+
+@media (max-width: 560px) {
+  .theme-admin .update-notice .panel__body {
+    align-items: stretch;
+    flex-direction: column;
+  }
+}
+
+.theme-admin .pin-option {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  min-height: 56px;
+  padding: 10px 12px;
+  border: 1px solid var(--admin-border);
+  border-radius: var(--admin-radius);
+  background: var(--admin-hover);
+  cursor: pointer;
+}
+
+.theme-admin .pin-option input {
+  width: 18px;
+  height: 18px;
+  min-height: 0;
+  accent-color: var(--admin-danger);
+}
+
+.theme-admin .pin-option span,
+.theme-admin .pin-option small {
+  display: block;
+}
+
+.theme-admin .pin-option strong {
+  color: var(--admin-text);
+  font: 600 14px/1.4 var(--font-ui);
+}
+
+.theme-admin .pin-option small {
+  margin-top: 2px;
+  color: var(--admin-soft);
+  font: 500 12px/1.45 var(--font-ui);
+}
+
 /* Terminal public theme */
 @scope (.theme-public) {
 :scope{--bg:#0a0f0a;--bg-alt:#0d130d;--fg:#c8e6c8;--green:#7ec699;--bright:#a8e8a8;--dim:#4a7a4a;--amber:#ffb86c;--blue:#7aa6da;--red:#cc6666;--grey:#5a6a5a;--line:#2a3a2a;--glow:rgba(168,232,168,.45)}
+.pinned-badge{display:inline-block;margin-right:7px;padding:0 4px;border:1px solid var(--red);color:#ff7b72;font-size:.78em;font-weight:700;line-height:1.45;text-decoration:none;vertical-align:1px;text-shadow:0 0 5px rgba(255,123,114,.3)}
 *{box-sizing:border-box;-webkit-font-smoothing:antialiased}:scope{margin:0;height:100%;overflow:hidden;background:var(--bg);color:var(--fg);font:14px/1.55 "IBM Plex Mono","Courier New",monospace;font-variant-ligatures:none}a{color:var(--blue);text-decoration:underline dotted;text-underline-offset:2px}a:hover{color:var(--bright)}
 .crt-vignette,.scanlines,.crt-flicker,.crt-turn-on{position:fixed;inset:0;pointer-events:none}.crt-vignette{z-index:100;background:radial-gradient(ellipse 130% 120% at center,transparent 55%,rgba(0,0,0,.55));mix-blend-mode:multiply}.scanlines{z-index:101;background:repeating-linear-gradient(to bottom,transparent 0,transparent 1px,rgba(0,0,0,.22) 1px,rgba(0,0,0,.22) 2px);opacity:.55}.scanlines.disabled{opacity:0}.crt-flicker{z-index:102;background:var(--bright);mix-blend-mode:overlay;opacity:0;animation:flicker .18s infinite}.crt-turn-on{z-index:200;background:var(--bg);transform-origin:center;animation:turn-on .7s ease-out forwards}
 @keyframes flicker{48%{opacity:.025}49%,74%{opacity:0}75%{opacity:.018}}@keyframes turn-on{0%{transform:scaleY(.005) scaleX(0);filter:brightness(8)}35%{transform:scaleY(.005) scaleX(1);filter:brightness(4)}65%{transform:scale(1);filter:brightness(2)}100%{transform:scale(1);opacity:0}}

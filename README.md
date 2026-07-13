@@ -19,6 +19,7 @@
 - 后台文章管理
 - 草稿、发布、定时发布
 - 站点基础设置
+- 后台自动检查 GitHub Release 并一键更新程序
 - 可选伪静态 URL
 - 基础 Markdown 渲染
 
@@ -102,3 +103,5 @@ location ~ \.php$ {
 
 - `data/` 和 `cache/` 不应该被公网直接访问
 - 如果要重装，先删除 `data/install.lock`
+- 更新程序后如涉及数据库结构变更，请先登录后台，再访问 `update.php` 执行升级
+- 一键更新会保留 `data/`、`cache/`、`uploads/`，并将被覆盖的程序文件备份到 `cache/update-backup-*`
