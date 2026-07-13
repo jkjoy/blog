@@ -13,7 +13,7 @@ session_set_cookie_params([
 ]);
 session_start();
 
-const APP_VERSION = 'v1.0.3';
+const APP_VERSION = 'v1.1.1';
 const DATA_DIR = __DIR__ . '/data';
 const CACHE_DIR = __DIR__ . '/cache';
 const UPLOAD_DIR = __DIR__ . '/uploads';
@@ -118,6 +118,33 @@ function table_columns(PDO $pdo, string $table): array
     return $columns;
 }
 
+function ensure_comment_reply_columns(PDO $pdo): void
+{
+    $columns = table_columns($pdo, 'comments');
+    if (isset($columns['parent_id'], $columns['reply_to_name'])) {
+        return;
+    }
+
+    $ownsTransaction = !$pdo->inTransaction();
+    if ($ownsTransaction) {
+        $pdo->exec('BEGIN IMMEDIATE');
+    }
+
+    try {
+        $columns = table_columns($pdo, 'comments');
+        if (!isset($columns['parent_id'])) { $pdo->exec('ALTER TABLE comments ADD COLUMN parent_id INTEGER REFERENCES comments(id) ON DELETE SET NULL'); }
+        if (!isset($columns['reply_to_name'])) { $pdo->exec("ALTER TABLE comments ADD COLUMN reply_to_name TEXT NOT NULL DEFAULT ''"); }
+        if ($ownsTransaction) {
+            $pdo->commit();
+        }
+    } catch (Throwable $exception) {
+        if ($ownsTransaction && $pdo->inTransaction()) {
+            $pdo->rollBack();
+        }
+        throw $exception;
+    }
+}
+
 function ensure_schema(PDO $pdo): void
 {
     static $done = false;
@@ -125,8 +152,6 @@ function ensure_schema(PDO $pdo): void
     if ($done) {
         return;
     }
-
-    $done = true;
 
     $pdo->exec(
         "CREATE TABLE IF NOT EXISTS settings(
@@ -197,6 +222,26 @@ function ensure_schema(PDO $pdo): void
             updated_at INTEGER NOT NULL
         )"
     );
+    $pdo->exec(
+        "CREATE TABLE IF NOT EXISTS comments(
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            post_id INTEGER NOT NULL,
+            parent_id INTEGER,
+            reply_to_name TEXT NOT NULL DEFAULT '',
+            author_name TEXT NOT NULL,
+            author_email TEXT NOT NULL,
+            author_url TEXT NOT NULL DEFAULT '',
+            content TEXT NOT NULL,
+            status TEXT NOT NULL DEFAULT 'pending',
+            is_read INTEGER NOT NULL DEFAULT 0,
+            ip_hash TEXT NOT NULL DEFAULT '',
+            user_agent TEXT NOT NULL DEFAULT '',
+            created_at INTEGER NOT NULL,
+            updated_at INTEGER NOT NULL,
+            FOREIGN KEY(post_id) REFERENCES posts(id) ON DELETE CASCADE,
+            FOREIGN KEY(parent_id) REFERENCES comments(id) ON DELETE SET NULL
+        )"
+    );
 
     $columns = table_columns($pdo, 'posts');
     $userColumns = table_columns($pdo, 'users');
@@ -207,6 +252,8 @@ function ensure_schema(PDO $pdo): void
 
     $linkColumns = table_columns($pdo, 'links');
     if (!isset($linkColumns['icon_url'])) { $pdo->exec("ALTER TABLE links ADD COLUMN icon_url TEXT NOT NULL DEFAULT ''"); }
+
+    ensure_comment_reply_columns($pdo);
 
     if (!isset($columns['author_id'])) {
         $pdo->exec("ALTER TABLE posts ADD COLUMN author_id INTEGER");
@@ -244,6 +291,11 @@ function ensure_schema(PDO $pdo): void
     $pdo->exec('CREATE INDEX IF NOT EXISTS idx_posts_category ON posts(category_id, kind, status, published_at DESC)');
     $pdo->exec('CREATE INDEX IF NOT EXISTS idx_categories_sort ON categories(sort_order ASC, id DESC)');
     $pdo->exec('CREATE INDEX IF NOT EXISTS idx_links_sort ON links(sort_order ASC, id DESC)');
+    $pdo->exec('CREATE INDEX IF NOT EXISTS idx_comments_post_public ON comments(post_id, status, created_at, id)');
+    $pdo->exec('CREATE INDEX IF NOT EXISTS idx_comments_moderation ON comments(status, created_at DESC, id DESC)');
+    $pdo->exec('CREATE INDEX IF NOT EXISTS idx_comments_unread ON comments(is_read, created_at DESC, id DESC)');
+    $pdo->exec('CREATE INDEX IF NOT EXISTS idx_comments_ip_recent ON comments(ip_hash, created_at DESC)');
+    $pdo->exec('CREATE INDEX IF NOT EXISTS idx_comments_parent ON comments(parent_id, created_at, id)');
 
     $defaultCategoryId = (int)($pdo->query("SELECT id FROM categories WHERE slug = 'default' ORDER BY id LIMIT 1")->fetchColumn() ?: 0);
     if ($defaultCategoryId < 1) {
@@ -254,6 +306,7 @@ function ensure_schema(PDO $pdo): void
     }
     $statement = $pdo->prepare("UPDATE posts SET category_id = ? WHERE kind = 'post' AND (category_id IS NULL OR category_id NOT IN (SELECT id FROM categories))");
     $statement->execute([$defaultCategoryId]);
+    $done = true;
 }
 
 function db(): PDO
@@ -261,6 +314,7 @@ function db(): PDO
     static $db;
 
     if ($db instanceof PDO) {
+        ensure_schema($db);
         return $db;
     }
 
@@ -333,6 +387,9 @@ function default_settings(): array
         'footer_beian' => '',
         'posts_per_page' => '6',
         'pretty_url' => '0',
+        'comments_enabled' => '1',
+        'comments_require_approval' => '1',
+        'comments_notify' => '1',
     ];
 }
 
@@ -796,7 +853,7 @@ function apply_pretty_route(): void
         return;
     }
 
-    if (preg_match('#^/admin/(posts|categories|tags|links|users|ai|settings)/?$#i', $path, $matches)) {
+    if (preg_match('#^/admin/(posts|comments|categories|tags|links|users|ai|settings)/?$#i', $path, $matches)) {
         set_route_params(['a' => 'admin_' . str_lower_u($matches[1])]);
         return;
     }
@@ -881,6 +938,7 @@ function url_for(string $route, array $params = []): string
         'logout' => $pretty ? app_path('/logout') : script_url() . '?a=logout',
         'admin' => $pretty ? app_path('/admin') : script_url() . '?a=admin',
         'admin_posts' => $pretty ? app_path('/admin/posts') : script_url() . '?a=admin_posts',
+        'admin_comments' => $pretty ? app_path('/admin/comments') : script_url() . '?a=admin_comments',
         'admin_categories' => $pretty ? app_path('/admin/categories') : script_url() . '?a=admin_categories',
         'admin_tags' => $pretty ? app_path('/admin/tags') : script_url() . '?a=admin_tags',
         'admin_links' => $pretty ? app_path('/admin/links') : script_url() . '?a=admin_links',
@@ -904,6 +962,9 @@ function url_for(string $route, array $params = []): string
         'upload_attachment' => script_url() . '?a=upload_attachment',
         'delete_post' => script_url() . '?a=delete_post',
         'change_status' => script_url() . '?a=change_status',
+        'submit_comment' => script_url() . '?a=submit_comment',
+        'moderate_comments' => script_url() . '?a=moderate_comments',
+        'mark_comments_read' => script_url() . '?a=mark_comments_read',
         'install_update' => script_url() . '?a=install_update',
         default => script_url(),
     };
@@ -1161,6 +1222,38 @@ function tag_slug_for_label(string $label): string
     return (string)(val('SELECT slug FROM tag_meta WHERE label = ?', [$label]) ?: $slug);
 }
 
+function split_bare_url_suffix(string $url): array
+{
+    $suffix = '';
+    $pairs = [')' => '(', ']' => '['];
+
+    while ($url !== '') {
+        if (preg_match("/[.,!?;:*']+$/", $url, $matches)) {
+            $ending = $matches[0];
+            $url = substr($url, 0, -strlen($ending));
+            $suffix = $ending . $suffix;
+            continue;
+        }
+
+        if (str_ends_with($url, '~~')) {
+            $url = substr($url, 0, -2);
+            $suffix = '~~' . $suffix;
+            continue;
+        }
+
+        $last = substr($url, -1);
+        if (isset($pairs[$last]) && substr_count($url, $last) > substr_count($url, $pairs[$last])) {
+            $url = substr($url, 0, -1);
+            $suffix = $last . $suffix;
+            continue;
+        }
+
+        break;
+    }
+
+    return [$url, $suffix];
+}
+
 function render_inline(string $text): string
 {
     $parts = preg_split('/(`[^`]+`)/u', $text, -1, PREG_SPLIT_DELIM_CAPTURE);
@@ -1179,6 +1272,34 @@ function render_inline(string $text): string
             $html .= '<code>' . h(substr($part, 1, -1)) . '</code>';
             continue;
         }
+
+        // Tokenize bare URLs so existing Markdown links and images cannot be linked twice.
+        $marker = "\x1A";
+        while (str_contains($part, $marker)) {
+            $marker .= "\x1A";
+        }
+
+        $bareLinks = [];
+        $part = preg_replace_callback(
+            '~\[!\[.*?\]\([^\s)]+\)\]\([^\s)]+\)|!\[.*?\]\([^\s)]+\)|(?<!!)\[.+?\]\([^\s)]+\)|(?<![A-Z0-9_])(?<bare_url>https?://[A-Z0-9._:/?#\[\]@!$&\'()*+,;=%\~-]+)~iu',
+            static function (array $matches) use (&$bareLinks, $marker): string {
+                $matchedUrl = (string)($matches['bare_url'] ?? '');
+                if ($matchedUrl === '') {
+                    return $matches[0];
+                }
+
+                [$url, $suffix] = split_bare_url_suffix($matchedUrl);
+                $href = safe_link_url($url);
+                if ($href === '#') {
+                    return $matches[0];
+                }
+
+                $token = $marker . count($bareLinks) . $marker;
+                $bareLinks[$token] = '<a href="' . h($href) . '" target="_blank" rel="noopener noreferrer">' . h($url) . '</a>';
+                return $token . $suffix;
+            },
+            $part
+        ) ?? $part;
 
         $escaped = h($part);
 
@@ -1214,7 +1335,7 @@ function render_inline(string $text): string
         $escaped = preg_replace('/\*(.+?)\*/u', '<em>$1</em>', $escaped) ?? $escaped;
         $escaped = preg_replace('/~~(.+?)~~/u', '<del>$1</del>', $escaped) ?? $escaped;
 
-        $html .= $escaped;
+        $html .= strtr($escaped, $bareLinks);
     }
 
     return $html;
@@ -1612,6 +1733,7 @@ function admin_metrics(): array
     $totalPosts = (int)val('SELECT COUNT(*) FROM posts WHERE kind = ? AND status = ? AND published_at <= ?', ['post', 'published', $now]);
     $publishedPosts = (int)val('SELECT COUNT(*) FROM posts WHERE kind = ? AND status = ? AND published_at <= ?', ['post', 'published', $now]);
     $totalViews = (int)val('SELECT COALESCE(SUM(views), 0) FROM posts WHERE status = ? AND published_at <= ?', ['published', $now]);
+    $commentCounts = comment_admin_counts();
 
     return [
         'total_posts' => $totalPosts,
@@ -1622,8 +1744,424 @@ function admin_metrics(): array
         'categories' => (int)val('SELECT COUNT(*) FROM categories'),
         'total_views' => $totalViews,
         'avg_views' => $totalPosts > 0 ? (int)floor($totalViews / $totalPosts) : 0,
+        'comments' => $commentCounts['all'],
+        'pending_comments' => $commentCounts['pending'],
         'top_viewed' => all_rows('SELECT id, slug, title, views FROM posts WHERE kind = ? AND status = ? AND published_at <= ? ORDER BY views DESC, updated_at DESC LIMIT 5', ['post', 'published', $now]),
     ];
+}
+
+function comment_status_meta(string $status): array
+{
+    return match ($status) {
+        'approved' => ['label' => '已通过', 'class' => 'approved'],
+        'spam' => ['label' => '垃圾评论', 'class' => 'spam'],
+        default => ['label' => '待审核', 'class' => 'pending'],
+    };
+}
+
+function public_comments_for_post(int $postId, int $limit = 100): array
+{
+    $limit = max(1, min(200, $limit));
+    return all_rows(
+        "SELECT id, parent_id, reply_to_name, author_name, author_url, content, created_at
+         FROM (
+             SELECT id, parent_id, reply_to_name, author_name, author_url, content, created_at
+             FROM comments
+             WHERE post_id = ? AND status = 'approved'
+             ORDER BY created_at DESC, id DESC
+             LIMIT {$limit}
+         )
+         ORDER BY created_at ASC, id ASC",
+        [$postId]
+    );
+}
+
+function approved_comment_count(int $postId): int
+{
+    return (int)val('SELECT COUNT(*) FROM comments WHERE post_id = ? AND status = ?', [$postId, 'approved']);
+}
+
+function approved_reply_target(int $postId, int $parentId): ?array
+{
+    if ($parentId < 1) {
+        return null;
+    }
+
+    return one(
+        'SELECT id, author_name FROM comments WHERE id = ? AND post_id = ? AND status = ?',
+        [$parentId, $postId, 'approved']
+    );
+}
+
+function comment_admin_counts(): array
+{
+    static $counts = null;
+    if (is_array($counts)) {
+        return $counts;
+    }
+
+    $row = one(
+        "SELECT
+            COUNT(*) AS total,
+            COALESCE(SUM(CASE WHEN is_read = 0 THEN 1 ELSE 0 END), 0) AS unread,
+            COALESCE(SUM(CASE WHEN status = 'pending' THEN 1 ELSE 0 END), 0) AS pending,
+            COALESCE(SUM(CASE WHEN status = 'approved' THEN 1 ELSE 0 END), 0) AS approved,
+            COALESCE(SUM(CASE WHEN status = 'spam' THEN 1 ELSE 0 END), 0) AS spam
+         FROM comments"
+    ) ?? [];
+
+    return $counts = [
+        'all' => (int)($row['total'] ?? 0),
+        'unread' => (int)($row['unread'] ?? 0),
+        'pending' => (int)($row['pending'] ?? 0),
+        'approved' => (int)($row['approved'] ?? 0),
+        'spam' => (int)($row['spam'] ?? 0),
+    ];
+}
+
+function unread_comment_count(): int
+{
+    return comment_admin_counts()['unread'];
+}
+
+function recent_comment_notifications(int $limit = 5): array
+{
+    $limit = max(1, min(20, $limit));
+    return all_rows(
+        "SELECT c.id, c.author_name, c.reply_to_name, c.content, c.created_at, p.kind AS post_kind, p.slug AS post_slug, p.title AS post_title
+         FROM comments c
+         INNER JOIN posts p ON p.id = c.post_id
+         WHERE c.is_read = 0
+         ORDER BY c.created_at DESC, c.id DESC
+         LIMIT {$limit}"
+    );
+}
+
+function admin_comments_url(string $filter = 'all', string $search = '', int $page = 1): string
+{
+    if (!in_array($filter, ['all', 'unread', 'pending', 'approved', 'spam'], true)) {
+        $filter = 'all';
+    }
+    $search = str_sub_u(trim($search), 0, 100);
+    $params = [];
+    if ($filter !== 'all') { $params['filter'] = $filter; }
+    if ($search !== '') { $params['q'] = $search; }
+    if ($page > 1) { $params['p'] = $page; }
+    $url = url_for('admin_comments');
+    return $params === [] ? $url : url_with_query($url, $params);
+}
+
+function fetch_admin_comments(string $filter, string $search, int $page, int $perPage = 20): array
+{
+    $allowed = ['all', 'unread', 'pending', 'approved', 'spam'];
+    $filter = in_array($filter, $allowed, true) ? $filter : 'all';
+    $where = [];
+    $params = [];
+
+    if ($filter === 'unread') {
+        $where[] = 'c.is_read = 0';
+    } elseif (in_array($filter, ['pending', 'approved', 'spam'], true)) {
+        $where[] = 'c.status = ?';
+        $params[] = $filter;
+    }
+
+    if ($search !== '') {
+        $where[] = '(c.author_name LIKE ? OR c.author_email LIKE ? OR c.reply_to_name LIKE ? OR c.content LIKE ? OR p.title LIKE ?)';
+        $term = '%' . $search . '%';
+        array_push($params, $term, $term, $term, $term, $term);
+    }
+
+    $whereSql = $where ? ' WHERE ' . implode(' AND ', $where) : '';
+    $total = (int)val('SELECT COUNT(*) FROM comments c INNER JOIN posts p ON p.id = c.post_id' . $whereSql, $params);
+    $perPage = max(1, min(100, $perPage));
+    $totalPages = max(1, (int)ceil($total / $perPage));
+    $page = max(1, min($page, $totalPages));
+    $offset = ($page - 1) * $perPage;
+    $rows = all_rows(
+        "SELECT c.*, p.kind AS post_kind, p.slug AS post_slug, p.title AS post_title
+         FROM comments c
+         INNER JOIN posts p ON p.id = c.post_id
+         {$whereSql}
+         ORDER BY c.is_read ASC, c.created_at DESC, c.id DESC
+         LIMIT {$perPage} OFFSET {$offset}",
+        $params
+    );
+
+    return [$rows, $total, $page, $totalPages, $filter];
+}
+
+function comment_excerpt(string $content, int $length = 100): string
+{
+    $excerpt = trim((string)(preg_replace('/\s+/u', ' ', $content) ?? $content));
+    return str_len_u($excerpt) > $length ? rtrim(str_sub_u($excerpt, 0, $length)) . '…' : $excerpt;
+}
+
+function comment_form_started_at(int $postId): int
+{
+    if (!isset($_SESSION['comment_forms']) || !is_array($_SESSION['comment_forms'])) {
+        $_SESSION['comment_forms'] = [];
+    }
+    $cutoff = time() - 7200;
+    foreach ($_SESSION['comment_forms'] as $storedPostId => $timestamps) {
+        if (!is_array($timestamps)) {
+            unset($_SESSION['comment_forms'][$storedPostId]);
+            continue;
+        }
+        $_SESSION['comment_forms'][$storedPostId] = array_filter(
+            $timestamps,
+            static fn(mixed $value, int|string $timestamp): bool => (int)$timestamp >= $cutoff,
+            ARRAY_FILTER_USE_BOTH
+        );
+        if ($_SESSION['comment_forms'][$storedPostId] === []) {
+            unset($_SESSION['comment_forms'][$storedPostId]);
+        }
+    }
+    $startedAt = time();
+    $_SESSION['comment_forms'][$postId][(string)$startedAt] = true;
+    return $startedAt;
+}
+
+function forget_comment_form(int $postId, int $startedAt): void
+{
+    unset($_SESSION['comment_forms'][$postId][(string)$startedAt]);
+    if (empty($_SESSION['comment_forms'][$postId])) {
+        unset($_SESSION['comment_forms'][$postId]);
+    }
+}
+
+function set_comment_feedback(int $postId, array $form, array $errors): void
+{
+    $_SESSION['comment_feedback'][$postId] = ['form' => $form, 'errors' => $errors];
+}
+
+function pull_comment_feedback(int $postId): array
+{
+    $feedback = $_SESSION['comment_feedback'][$postId] ?? null;
+    unset($_SESSION['comment_feedback'][$postId]);
+    if (!is_array($feedback)) {
+        return [[], []];
+    }
+    return [
+        is_array($feedback['form'] ?? null) ? $feedback['form'] : [],
+        is_array($feedback['errors'] ?? null) ? $feedback['errors'] : [],
+    ];
+}
+
+function set_comment_notice(int $postId, string $type, string $message): void
+{
+    $_SESSION['comment_notices'][$postId] = ['type' => $type, 'message' => $message];
+}
+
+function pull_comment_notice(int $postId): ?array
+{
+    $notice = $_SESSION['comment_notices'][$postId] ?? null;
+    unset($_SESSION['comment_notices'][$postId]);
+    return is_array($notice) ? $notice : null;
+}
+
+function comment_ip_hash(): string
+{
+    $address = (string)($_SERVER['REMOTE_ADDR'] ?? 'unknown');
+    return hash_hmac('sha256', $address, DB_FILE !== '' ? DB_FILE : __FILE__);
+}
+
+function comment_rate_file(): string
+{
+    $address = (string)($_SERVER['REMOTE_ADDR'] ?? 'unknown');
+    return CACHE_DIR . '/comment-' . hash('sha256', $address) . '.json';
+}
+
+function comment_rate_guard_file(): string
+{
+    return CACHE_DIR . '/comment-rate.lock';
+}
+
+function prune_comment_rate_files(): void
+{
+    $guard = @fopen(comment_rate_guard_file(), 'c+');
+    if ($guard === false) {
+        return;
+    }
+    if (!flock($guard, LOCK_EX | LOCK_NB)) {
+        fclose($guard);
+        return;
+    }
+
+    $checked = 0;
+    $visited = 0;
+    $cutoff = time() - 86400;
+    rewind($guard);
+    $storedCursor = trim((string)stream_get_contents($guard));
+    $cursor = ctype_digit($storedCursor) ? (int)$storedCursor : 0;
+    $nextCursor = $cursor;
+
+    try {
+        $iterator = new DirectoryIterator(CACHE_DIR);
+        if ($cursor > 0) {
+            $iterator->seek($cursor);
+        }
+
+        while ($iterator->valid() && $visited < 64 && $checked < 8) {
+            $filename = $iterator->getFilename();
+            $isRateFile = $iterator->isFile() && preg_match('/^comment-[a-f0-9]{64}\.json$/', $filename);
+            $path = $isRateFile ? $iterator->getPathname() : '';
+            $mtime = $isRateFile ? $iterator->getMTime() : 0;
+            $iterator->next();
+            $nextCursor++;
+            $visited++;
+
+            if (!$isRateFile) {
+                continue;
+            }
+            $checked++;
+            if ($mtime >= $cutoff) {
+                continue;
+            }
+
+            $candidate = @fopen($path, 'r');
+            if ($candidate === false) {
+                continue;
+            }
+            if (flock($candidate, LOCK_EX | LOCK_NB)) {
+                $stat = fstat($candidate);
+                if (is_array($stat) && (int)($stat['mtime'] ?? PHP_INT_MAX) < $cutoff) {
+                    @unlink($path);
+                }
+                flock($candidate, LOCK_UN);
+            }
+            fclose($candidate);
+        }
+
+        if (!$iterator->valid()) {
+            $nextCursor = 0;
+        }
+    } catch (Throwable) {
+        $nextCursor = 0;
+    }
+
+    $encodedCursor = (string)$nextCursor;
+    if (ftruncate($guard, 0) && rewind($guard)) {
+        $written = fwrite($guard, $encodedCursor);
+        if (is_int($written) && $written === strlen($encodedCursor)) {
+            fflush($guard);
+        }
+    }
+    flock($guard, LOCK_UN);
+    fclose($guard);
+}
+
+function record_comment_attempt(): bool
+{
+    ensure_runtime_dirs();
+    prune_comment_rate_files();
+    $guard = @fopen(comment_rate_guard_file(), 'c+');
+    if ($guard === false) {
+        return false;
+    }
+    if (!flock($guard, LOCK_SH)) {
+        fclose($guard);
+        return false;
+    }
+
+    $handle = @fopen(comment_rate_file(), 'c+');
+    if ($handle === false) {
+        flock($guard, LOCK_UN);
+        fclose($guard);
+        return false;
+    }
+
+    if (!flock($handle, LOCK_EX)) {
+        fclose($handle);
+        flock($guard, LOCK_UN);
+        fclose($guard);
+        return false;
+    }
+    $raw = stream_get_contents($handle);
+    $state = json_decode($raw ?: '', true);
+    $now = time();
+    if (!is_array($state) || $now - (int)($state['since'] ?? 0) >= 600) {
+        $state = ['count' => 0, 'since' => $now];
+    }
+    $allowed = (int)$state['count'] < 3;
+    if ($allowed) {
+        $state['count'] = (int)$state['count'] + 1;
+    }
+    $encoded = json_encode($state);
+    $stored = is_string($encoded) && rewind($handle);
+    if ($stored) {
+        $length = strlen($encoded);
+        $offset = 0;
+        while ($offset < $length) {
+            $written = fwrite($handle, substr($encoded, $offset));
+            if (!is_int($written) || $written < 1) {
+                $stored = false;
+                break;
+            }
+            $offset += $written;
+        }
+        if ($stored) {
+            $stored = ftruncate($handle, $length) && fflush($handle);
+        }
+    }
+    flock($handle, LOCK_UN);
+    fclose($handle);
+    flock($guard, LOCK_UN);
+    fclose($guard);
+    return $allowed && $stored;
+}
+
+function validate_comment_input(array $input): array
+{
+    $name = trim((string)($input['author_name'] ?? ''));
+    $name = trim((string)(preg_replace('/\s+/u', ' ', $name) ?? $name));
+    $email = str_lower_u(trim((string)($input['author_email'] ?? '')));
+    $url = trim((string)($input['author_url'] ?? ''));
+    $content = trim(str_replace(["\r\n", "\r"], "\n", (string)($input['content'] ?? '')));
+    $errors = [];
+    $rawParentId = $input['parent_id'] ?? '';
+    $parentText = is_scalar($rawParentId) ? trim((string)$rawParentId) : '';
+    $parentId = 0;
+    if (!is_scalar($rawParentId) || ($parentText !== '' && $parentText !== '0' && (!ctype_digit($parentText) || (int)$parentText < 1))) {
+        $errors[] = '回复目标不存在或当前不可用。';
+    } elseif ($parentText !== '' && $parentText !== '0') {
+        $parentId = (int)$parentText;
+    }
+
+    if ($name === '') { $errors[] = '请填写昵称。'; }
+    elseif (str_len_u($name) > 50) { $errors[] = '昵称不能超过 50 个字符。'; }
+    if ($email === '' || !filter_var($email, FILTER_VALIDATE_EMAIL) || strlen($email) > 160) { $errors[] = '请填写有效的邮箱地址。'; }
+    if ($url !== '') {
+        $scheme = str_lower_u((string)parse_url($url, PHP_URL_SCHEME));
+        if (strlen($url) > 300 || !filter_var($url, FILTER_VALIDATE_URL) || !in_array($scheme, ['http', 'https'], true)) {
+            $errors[] = '网站地址必须是有效的 HTTP 或 HTTPS 链接。';
+        }
+    }
+    if ($content === '') { $errors[] = '请填写评论内容。'; }
+    elseif (str_len_u($content) > 3000) { $errors[] = '评论内容不能超过 3000 个字符。'; }
+
+    return [[
+        'author_name' => str_sub_u($name, 0, 50),
+        'author_email' => str_sub_u($email, 0, 160),
+        'author_url' => str_sub_u($url, 0, 300),
+        'content' => str_sub_u($content, 0, 3000),
+        'parent_id' => (string)$parentId,
+    ], $errors];
+}
+
+function duplicate_comment_error(int $postId, int $parentId, string $email, string $content): string
+{
+    if ($parentId > 0) {
+        $duplicate = (int)val(
+            'SELECT COUNT(*) FROM comments WHERE post_id = ? AND parent_id = ? AND author_email = ? AND content = ? AND created_at >= ?',
+            [$postId, $parentId, $email, $content, time() - 86400]
+        );
+    } else {
+        $duplicate = (int)val(
+            'SELECT COUNT(*) FROM comments WHERE post_id = ? AND parent_id IS NULL AND author_email = ? AND content = ? AND created_at >= ?',
+            [$postId, $email, $content, time() - 86400]
+        );
+    }
+    return $duplicate > 0 ? '这条评论已经提交过了。' : '';
 }
 
 function post_neighbors(array $post): array
@@ -1929,6 +2467,8 @@ function admin_icon(string $name): string
         'home' => '<path d="M3 10.5 12 3l9 7.5"></path><path d="M5 10v10h14V10"></path><path d="M9 20v-6h6v6"></path>',
         'write' => '<path d="M12 20h9"></path><path d="M16.5 3.5a2.1 2.1 0 0 1 3 3L7 19l-4 1 1-4 12.5-12.5z"></path>',
         'posts' => '<path d="M8 6h13"></path><path d="M8 12h13"></path><path d="M8 18h13"></path><path d="M3 6h.01"></path><path d="M3 12h.01"></path><path d="M3 18h.01"></path>',
+        'comments' => '<path d="M21 15a4 4 0 0 1-4 4H8l-5 3V7a4 4 0 0 1 4-4h10a4 4 0 0 1 4 4v8z"></path><path d="M8 9h8"></path><path d="M8 13h5"></path>',
+        'bell' => '<path d="M18 8a6 6 0 0 0-12 0c0 7-3 7-3 9h18c0-2-3-2-3-9"></path><path d="M10 21h4"></path>',
         'categories' => '<path d="M3 6h7l2 2h9v10a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V6z"></path>',
         'tags' => '<path d="M12.6 2.6H5a2.4 2.4 0 0 0-2.4 2.4v7.6a2.4 2.4 0 0 0 .7 1.7l6.4 6.4a2.4 2.4 0 0 0 3.4 0l7.6-7.6a2.4 2.4 0 0 0 0-3.4l-6.4-6.4a2.4 2.4 0 0 0-1.7-.7z"></path><circle cx="8" cy="8" r="1"></circle>',
         'links' => '<path d="M10 13a5 5 0 0 0 7.5.5l2-2a5 5 0 0 0-7.1-7.1l-1.1 1.1"></path><path d="M14 11a5 5 0 0 0-7.5-.5l-2 2a5 5 0 0 0 7.1 7.1l1.1-1.1"></path>',
@@ -1951,6 +2491,7 @@ function render_admin_sidebar(string $active, array $summary = []): string
     $adminAvatarUrl = trim((string)($admin['avatar_url'] ?? ''));
     $adminInitial = str_sub_u($adminName, 0, 1);
     $userSettingsUrl = $adminId > 0 ? url_with_query(url_for('admin_users'), ['id' => $adminId]) : url_for('admin_users');
+    $unreadComments = unread_comment_count();
     $links = [
         [
             'label' => '博客概览',
@@ -1972,6 +2513,14 @@ function render_admin_sidebar(string $active, array $summary = []): string
             'note' => '列表与发布',
             'href' => url_for('admin_posts'),
             'active' => $active === 'posts',
+        ],
+        [
+            'label' => '评论管理',
+            'icon' => 'comments',
+            'note' => '审核与通知',
+            'href' => url_for('admin_comments'),
+            'active' => $active === 'comments',
+            'badge' => $unreadComments,
         ],
         [
             'label' => '分类管理',
@@ -2022,10 +2571,15 @@ function render_admin_sidebar(string $active, array $summary = []): string
         <p class="admin-side__eyebrow">管理导航</p>
         <nav class="admin-side__nav" aria-label="Admin">
           <?php foreach ($links as $link): ?>
-            <a class="admin-side__link<?= $link['active'] ? ' is-active' : '' ?>" href="<?= h((string)$link['href']) ?>" title="<?= h((string)$link['label']) ?>" aria-label="<?= h((string)$link['label']) ?>"<?= $link['active'] ? ' aria-current="page"' : '' ?>>
+            <?php $linkBadge = (int)($link['badge'] ?? 0); ?>
+            <?php $linkLabel = (string)$link['label'] . ($linkBadge > 0 ? '，' . $linkBadge . ' 条未读评论' : ''); ?>
+            <a class="admin-side__link<?= $link['active'] ? ' is-active' : '' ?>" href="<?= h((string)$link['href']) ?>" title="<?= h((string)$link['label']) ?>" aria-label="<?= h($linkLabel) ?>"<?= $link['active'] ? ' aria-current="page"' : '' ?>>
               <?= admin_icon((string)$link['icon']) ?>
               <strong><?= h((string)$link['label']) ?></strong>
               <span><?= h((string)$link['note']) ?></span>
+              <?php if ($linkBadge > 0): ?>
+                <small class="admin-count-badge" aria-hidden="true"><?= h((string)min(99, $linkBadge)) ?><?= $linkBadge > 99 ? '+' : '' ?></small>
+              <?php endif; ?>
             </a>
           <?php endforeach; ?>
         </nav>
@@ -2087,11 +2641,17 @@ function render_admin_sidebar(string $active, array $summary = []): string
 
 function render_admin_topbar(string $title, string $actionLabel = '', string $actionUrl = ''): string
 {
+    $unreadComments = unread_comment_count();
+    $notificationUrl = $unreadComments > 0 ? admin_comments_url('unread') : url_for('admin_comments');
     ob_start();
     ?>
     <div class="admin-topbar">
       <div class="admin-crumb">控制台 / <b><?= h($title) ?></b></div>
       <div class="admin-topbar__actions">
+        <a class="admin-icon-btn admin-icon-btn--notifications" href="<?= h($notificationUrl) ?>" title="评论通知" aria-label="<?= $unreadComments > 0 ? h((string)$unreadComments) . ' 条未读评论' : '暂无未读评论' ?>">
+          <?= admin_icon('bell') ?>
+          <?php if ($unreadComments > 0): ?><small class="admin-count-badge"><?= h((string)min(99, $unreadComments)) ?><?= $unreadComments > 99 ? '+' : '' ?></small><?php endif; ?>
+        </a>
         <a class="admin-icon-btn" href="<?= h(url_for('home')) ?>" target="_blank" rel="noopener noreferrer" title="网站首页" aria-label="网站首页">
           <?= admin_icon('home') ?>
         </a>
@@ -2239,9 +2799,155 @@ function render_archives(): void
     ]);
 }
 
-function render_post_page(array $post): void
+function render_comments_section(array $post, array $form = [], array $errors = []): string
+{
+    $postId = (int)$post['id'];
+    $comments = public_comments_for_post($postId);
+    $total = approved_comment_count($postId);
+    $accepting = setting('comments_enabled', '1') === '1' && is_live_post($post);
+    $notice = pull_comment_notice($postId);
+
+    if (!$accepting && $total === 0 && $notice === null) {
+        return '';
+    }
+
+    $identity = is_array($_SESSION['comment_identity'] ?? null) ? $_SESSION['comment_identity'] : [];
+    $values = array_merge([
+        'author_name' => (string)($identity['author_name'] ?? ''),
+        'author_email' => (string)($identity['author_email'] ?? ''),
+        'author_url' => (string)($identity['author_url'] ?? ''),
+        'content' => '',
+        'parent_id' => '',
+    ], $form);
+    $replyTarget = approved_reply_target($postId, (int)$values['parent_id']);
+    $replyTargetId = (int)($replyTarget['id'] ?? 0);
+    $replyTargetName = (string)($replyTarget['author_name'] ?? '');
+    $visibleCommentIds = [];
+    foreach ($comments as $visibleComment) {
+        $visibleCommentIds[(int)$visibleComment['id']] = true;
+    }
+    $invalidFields = [
+        'author_name' => false,
+        'author_email' => false,
+        'author_url' => false,
+        'content' => false,
+    ];
+    foreach ($errors as $error) {
+        $error = (string)$error;
+        if (str_contains($error, '昵称')) { $invalidFields['author_name'] = true; }
+        if (str_contains($error, '邮箱')) { $invalidFields['author_email'] = true; }
+        if (str_contains($error, '网站地址')) { $invalidFields['author_url'] = true; }
+        if (str_contains($error, '评论内容') || str_contains($error, '已经提交过')) { $invalidFields['content'] = true; }
+    }
+
+    ob_start();
+    ?>
+    <section class="comments" id="comments" aria-labelledby="comments-title">
+      <header class="comments__head">
+        <h2 class="section-header" id="comments-title">comments.log</h2>
+        <span class="comments__count"><?= $total > count($comments) ? '最新 ' . h((string)count($comments)) . ' / 共 ' : '' ?><?= h((string)$total) ?> 条</span>
+      </header>
+
+      <?php if ($notice): ?>
+        <div class="comment-notice<?= (string)($notice['type'] ?? '') === 'error' ? ' comment-notice--error' : '' ?>" role="<?= (string)($notice['type'] ?? '') === 'error' ? 'alert' : 'status' ?>"><?= h((string)($notice['message'] ?? '')) ?></div>
+      <?php endif; ?>
+
+      <?php if ($comments): ?>
+        <ol class="comment-list">
+          <?php foreach ($comments as $comment): ?>
+            <?php $authorUrl = safe_link_url((string)$comment['author_url']); ?>
+            <?php $replyName = trim((string)$comment['reply_to_name']); ?>
+            <?php $replyParentId = (int)$comment['parent_id']; ?>
+            <?php $replyAnchorVisible = $replyParentId > 0 && isset($visibleCommentIds[$replyParentId]); ?>
+            <li class="comment-item<?= $replyName !== '' ? ' comment-item--reply' : '' ?>" id="comment-<?= h((string)$comment['id']) ?>">
+              <header class="comment-item__meta">
+                <?php if ($authorUrl !== '#'): ?>
+                  <a class="comment-item__author" href="<?= h($authorUrl) ?>" target="_blank" rel="ugc nofollow noopener noreferrer">@<?= h((string)$comment['author_name']) ?></a>
+                <?php else: ?>
+                  <strong class="comment-item__author">@<?= h((string)$comment['author_name']) ?></strong>
+                <?php endif; ?>
+                <?php if ($replyName !== ''): ?>
+                  <?php if ($replyAnchorVisible): ?>
+                    <a class="comment-item__reply-target" href="#comment-<?= h((string)$replyParentId) ?>"><span class="sr-only">回复给 @</span><span aria-hidden="true">+@</span><?= h($replyName) ?></a>
+                  <?php else: ?>
+                    <span class="comment-item__reply-target"><span class="sr-only">回复给 @</span><span aria-hidden="true">+@</span><?= h($replyName) ?></span>
+                  <?php endif; ?>
+                <?php endif; ?>
+                <time class="comment-item__time" datetime="<?= h(date(DATE_ATOM, (int)$comment['created_at'])) ?>"><?= h(pretty_date((int)$comment['created_at'], true)) ?></time>
+                <?php if ($accepting): ?>
+                  <button class="comment-reply-button" type="button" data-comment-reply data-comment-id="<?= h((string)$comment['id']) ?>" data-comment-author="<?= h((string)$comment['author_name']) ?>" aria-controls="comment-form" aria-pressed="<?= $replyTargetId === (int)$comment['id'] ? 'true' : 'false' ?>" aria-label="回复 @<?= h((string)$comment['author_name']) ?>" title="回复 @<?= h((string)$comment['author_name']) ?>">
+                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><path d="m9 17-5-5 5-5"></path><path d="M20 18v-2a4 4 0 0 0-4-4H4"></path></svg>
+                    <span>回复</span>
+                  </button>
+                <?php endif; ?>
+              </header>
+              <div class="comment-item__body"><?= nl2br(h((string)$comment['content']), false) ?></div>
+            </li>
+          <?php endforeach; ?>
+        </ol>
+      <?php else: ?>
+        <div class="comments__empty empty-notice">// 暂无评论</div>
+      <?php endif; ?>
+
+      <?php if ($accepting): ?>
+        <form class="comment-form" id="comment-form" method="post" action="<?= h(url_for('submit_comment')) ?>#comments">
+          <?= csrf_field() ?>
+          <input type="hidden" name="post_id" value="<?= h((string)$postId) ?>">
+          <input type="hidden" name="parent_id" value="<?= $replyTargetId > 0 ? h((string)$replyTargetId) : '' ?>" data-comment-parent-id>
+          <input type="hidden" name="comment_started_at" value="<?= h((string)comment_form_started_at($postId)) ?>">
+          <div class="comment-honeypot" aria-hidden="true">
+            <label for="comment-company">Company</label>
+            <input id="comment-company" name="company" type="text" tabindex="-1" autocomplete="off">
+          </div>
+
+          <h3 class="comment-form__title">new-comment</h3>
+          <div class="comment-reply-state" data-comment-reply-state<?= $replyTargetId > 0 ? '' : ' hidden' ?>>
+            <span class="comment-reply-state__text" role="status" aria-live="polite" aria-atomic="true">reply-to: <strong data-comment-reply-name><?= $replyTargetId > 0 ? '@' . h($replyTargetName) : '' ?></strong></span>
+            <button class="comment-reply-cancel" type="button" data-comment-reply-cancel aria-label="取消回复">[取消]</button>
+          </div>
+          <?php if ($errors): ?>
+            <div class="comment-notice comment-notice--error" id="comment-errors" role="alert">
+              <ul><?php foreach ($errors as $error): ?><li><?= h((string)$error) ?></li><?php endforeach; ?></ul>
+            </div>
+          <?php endif; ?>
+
+          <div class="comment-form__grid">
+            <div class="comment-field">
+              <label for="comment-author">昵称</label>
+              <input id="comment-author" name="author_name" value="<?= h((string)$values['author_name']) ?>" maxlength="50" autocomplete="name"<?= $invalidFields['author_name'] ? ' aria-invalid="true" aria-describedby="comment-errors"' : '' ?> required>
+            </div>
+            <div class="comment-field">
+              <label for="comment-email">邮箱</label>
+              <input id="comment-email" name="author_email" type="email" value="<?= h((string)$values['author_email']) ?>" maxlength="160" autocomplete="email"<?= $invalidFields['author_email'] ? ' aria-invalid="true" aria-describedby="comment-errors"' : '' ?> required>
+            </div>
+            <div class="comment-field comment-field--wide">
+              <label for="comment-url">网站（可选）</label>
+              <input id="comment-url" name="author_url" type="url" value="<?= h((string)$values['author_url']) ?>" maxlength="300" autocomplete="url" placeholder="https://example.com"<?= $invalidFields['author_url'] ? ' aria-invalid="true" aria-describedby="comment-errors"' : '' ?>>
+            </div>
+          </div>
+          <div class="comment-field">
+            <label for="comment-content">评论</label>
+            <textarea id="comment-content" name="content" rows="6" maxlength="3000"<?= $invalidFields['content'] ? ' aria-invalid="true" aria-describedby="comment-errors"' : '' ?> required><?= h((string)$values['content']) ?></textarea>
+          </div>
+          <div class="comment-form__actions">
+            <button class="terminal-action" type="submit">[提交评论]</button>
+          </div>
+        </form>
+      <?php elseif ($total > 0): ?>
+        <div class="comments__empty empty-notice">// 评论已关闭</div>
+      <?php endif; ?>
+    </section>
+    <?php
+    return (string)ob_get_clean();
+}
+
+function render_post_page(array $post, array $commentForm = [], array $commentErrors = []): void
 {
     increment_content_views($post);
+
+    if ($commentForm === [] && $commentErrors === []) {
+        [$commentForm, $commentErrors] = pull_comment_feedback((int)$post['id']);
+    }
 
     $neighbors = post_neighbors($post);
     $state = post_state($post);
@@ -2292,6 +2998,8 @@ function render_post_page(array $post): void
         </li>
       </ul>
     <?php endif; ?>
+
+    <?= render_comments_section($post, $commentForm, $commentErrors) ?>
     <?php
     $content = (string)ob_get_clean();
 
@@ -2504,6 +3212,7 @@ function render_admin_page(): void
 
     $metrics = admin_metrics();
     $update = github_update_info();
+    $commentNotifications = recent_comment_notifications();
     $sidebar = render_admin_sidebar('admin');
 
     ob_start();
@@ -2522,6 +3231,36 @@ function render_admin_page(): void
                 <form method="post" action="<?= h(url_for('install_update')) ?>" onsubmit="return confirm('确定更新到 <?= h((string)$update['latest']) ?> 吗？更新期间请勿关闭页面。');">
                   <?= csrf_field() ?><button class="button button--primary" type="submit">立即更新</button>
                 </form>
+              </div>
+            </section>
+          <?php endif; ?>
+          <?php if ($commentNotifications): ?>
+            <section class="panel admin-list-panel comment-notifications admin-animate admin-animate--2">
+              <div class="panel__header">
+                <div class="admin-head">
+                  <div class="admin-head-left">
+                    <h2>评论通知</h2>
+                    <p class="panel__meta"><?= h((string)$metrics['pending_comments']) ?> 条待审核，最近未读如下。</p>
+                  </div>
+                  <a class="button button--secondary" href="<?= h(admin_comments_url('unread')) ?>">查看全部</a>
+                </div>
+              </div>
+              <div class="panel__body panel__body--flush">
+                <ol class="comment-notice-list">
+                  <?php foreach ($commentNotifications as $notification): ?>
+                    <li class="comment-notice-item is-unread">
+                      <div class="comment-notice-item__body">
+                        <div class="comment-notice-item__meta">
+                          <strong><?= h((string)$notification['author_name']) ?></strong>
+                          <?php if (trim((string)$notification['reply_to_name']) !== ''): ?><span class="comment-notice-item__reply">回复 @<?= h((string)$notification['reply_to_name']) ?></span><?php endif; ?>
+                          <time datetime="<?= h(date(DATE_ATOM, (int)$notification['created_at'])) ?>"><?= h(pretty_date((int)$notification['created_at'], true)) ?></time>
+                        </div>
+                        <p class="comment-notice-item__excerpt"><?= h(comment_excerpt((string)$notification['content'], 140)) ?></p>
+                        <a href="<?= h(content_permalink(['kind' => (string)$notification['post_kind'], 'slug' => (string)$notification['post_slug']])) ?>"><?= h((string)$notification['post_title']) ?></a>
+                      </div>
+                    </li>
+                  <?php endforeach; ?>
+                </ol>
               </div>
             </section>
           <?php endif; ?>
@@ -2551,6 +3290,16 @@ function render_admin_page(): void
                   <span class="metric-card__label">平均浏览</span>
                   <strong class="metric-card__value"><?= h((string)$metrics['avg_views']) ?></strong>
                   <span class="metric-card__trend">按文章数粗略计算</span>
+                </div>
+                <div class="metric-card">
+                  <span class="metric-card__label">评论总数</span>
+                  <strong class="metric-card__value"><?= h((string)$metrics['comments']) ?></strong>
+                  <span class="metric-card__trend">包含所有审核状态</span>
+                </div>
+                <div class="metric-card">
+                  <span class="metric-card__label">待审核评论</span>
+                  <strong class="metric-card__value"><?= h((string)$metrics['pending_comments']) ?></strong>
+                  <span class="metric-card__trend">需要管理员处理</span>
                 </div>
               </div>
             </div>
@@ -2737,6 +3486,174 @@ function render_admin_posts_page(): void
         'active' => 'posts',
         'wide' => true,
         'description' => '博客文章管理',
+    ]);
+}
+
+function render_admin_comments_page(): void
+{
+    require_admin();
+
+    $filter = trim((string)($_GET['filter'] ?? 'all'));
+    $search = str_sub_u(trim((string)($_GET['q'] ?? '')), 0, 100);
+    $requestedPage = max(1, (int)($_GET['p'] ?? 1));
+    [$comments, $total, $page, $totalPages, $filter] = fetch_admin_comments($filter, $search, $requestedPage);
+    $counts = comment_admin_counts();
+    $sidebar = render_admin_sidebar('comments', [
+        'title' => '评论概览',
+        'stats' => [
+            ['label' => '未读', 'value' => $counts['unread']],
+            ['label' => '待审核', 'value' => $counts['pending']],
+            ['label' => '已通过', 'value' => $counts['approved']],
+        ],
+    ]);
+    $filters = [
+        'all' => ['label' => '全部', 'count' => $counts['all']],
+        'unread' => ['label' => '未读', 'count' => $counts['unread']],
+        'pending' => ['label' => '待审核', 'count' => $counts['pending']],
+        'approved' => ['label' => '已通过', 'count' => $counts['approved']],
+        'spam' => ['label' => '垃圾', 'count' => $counts['spam']],
+    ];
+
+    ob_start();
+    ?>
+    <div class="admin-shell">
+      <?= $sidebar ?>
+      <div class="admin-main">
+        <?= render_admin_topbar('评论管理') ?>
+
+        <section class="panel admin-list-panel admin-animate admin-animate--2">
+          <div class="panel__header">
+            <div class="admin-head">
+              <div class="admin-head-left">
+                <h2>评论管理</h2>
+                <p class="panel__meta">当前筛选 <?= h((string)$total) ?> 条，审核状态与未读通知独立管理。</p>
+              </div>
+              <?php if ($counts['unread'] > 0): ?>
+                <form method="post" action="<?= h(url_for('mark_comments_read')) ?>">
+                  <?= csrf_field() ?>
+                  <input type="hidden" name="filter" value="<?= h($filter) ?>">
+                  <input type="hidden" name="q" value="<?= h($search) ?>">
+                  <input type="hidden" name="p" value="<?= h((string)$page) ?>">
+                  <button class="button button--secondary comment-mark-read" type="submit">全部标为已读</button>
+                </form>
+              <?php endif; ?>
+            </div>
+          </div>
+
+          <div class="admin-comment-toolbar">
+            <nav class="admin-filter-tabs" aria-label="评论筛选">
+              <?php foreach ($filters as $key => $item): ?>
+                <a class="admin-filter-tab<?= $filter === $key ? ' is-active' : '' ?>" href="<?= h(admin_comments_url($key, $search)) ?>"<?= $filter === $key ? ' aria-current="page"' : '' ?>>
+                  <?= h((string)$item['label']) ?><span><?= h((string)$item['count']) ?></span>
+                </a>
+              <?php endforeach; ?>
+            </nav>
+            <form class="comment-search" method="get" action="<?= h(url_for('admin_comments')) ?>">
+              <?php if (!use_pretty_url()): ?><input type="hidden" name="a" value="admin_comments"><?php endif; ?>
+              <?php if ($filter !== 'all'): ?><input type="hidden" name="filter" value="<?= h($filter) ?>"><?php endif; ?>
+              <label class="sr-only" for="comment-search">搜索评论</label>
+              <input id="comment-search" name="q" type="search" value="<?= h($search) ?>" placeholder="作者、邮箱、正文或文章">
+              <button class="button button--secondary" type="submit">搜索</button>
+            </form>
+          </div>
+
+          <div class="panel__body panel__body--flush">
+            <?php if ($comments): ?>
+              <div class="table-wrap">
+                <table class="admin-table comment-table">
+                  <thead>
+                    <tr>
+                      <th><label class="table-check"><input type="checkbox" data-check-all="comment_ids[]" aria-label="全选评论"><span class="sr-only">全选</span></label></th>
+                      <th>评论者</th>
+                      <th>内容与文章</th>
+                      <th>状态</th>
+                      <th>提交时间</th>
+                      <th>操作</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    <?php foreach ($comments as $comment): ?>
+                      <?php $state = comment_status_meta((string)$comment['status']); ?>
+                      <?php $authorUrl = safe_link_url((string)$comment['author_url']); ?>
+                      <tr class="comment-row<?= (int)$comment['is_read'] === 0 ? ' is-unread' : '' ?>">
+                        <td><label class="table-check"><input type="checkbox" name="comment_ids[]" value="<?= h((string)$comment['id']) ?>" form="comments-bulk-form" aria-label="选择 <?= h((string)$comment['author_name']) ?> 的评论"><span class="sr-only">选择评论</span></label></td>
+                        <td>
+                          <div class="table-title">
+                            <strong><?= h((string)$comment['author_name']) ?></strong>
+                            <span><?= h((string)$comment['author_email']) ?></span>
+                            <?php if ($authorUrl !== '#'): ?><a href="<?= h($authorUrl) ?>" target="_blank" rel="noopener noreferrer nofollow"><?= h((string)parse_url($authorUrl, PHP_URL_HOST)) ?></a><?php endif; ?>
+                          </div>
+                        </td>
+                        <td>
+                          <div class="comment-summary">
+                            <?php if (trim((string)$comment['reply_to_name']) !== ''): ?><span class="comment-summary__reply">回复 @<?= h((string)$comment['reply_to_name']) ?></span><?php endif; ?>
+                            <p><?= h(comment_excerpt((string)$comment['content'])) ?></p>
+                            <a href="<?= h(content_permalink(['kind' => (string)$comment['post_kind'], 'slug' => (string)$comment['post_slug']])) ?><?= (string)$comment['status'] === 'approved' && (string)$comment['post_kind'] === 'post' ? '#comment-' . h((string)$comment['id']) : '' ?>"><?= h((string)$comment['post_title']) ?></a>
+                          </div>
+                        </td>
+                        <td>
+                          <span class="status-badge status-badge--<?= h((string)$state['class']) ?>"><?= h((string)$state['label']) ?></span>
+                          <?php if ((int)$comment['is_read'] === 0): ?><span class="comment-unread-dot">未读</span><?php endif; ?>
+                        </td>
+                        <td><time datetime="<?= h(date(DATE_ATOM, (int)$comment['created_at'])) ?>"><?= h(pretty_date((int)$comment['created_at'], true)) ?></time></td>
+                        <td>
+                          <form class="table-actions comment-actions" method="post" action="<?= h(url_for('moderate_comments')) ?>">
+                            <?= csrf_field() ?>
+                            <input type="hidden" name="comment_id" value="<?= h((string)$comment['id']) ?>">
+                            <input type="hidden" name="filter" value="<?= h($filter) ?>">
+                            <input type="hidden" name="q" value="<?= h($search) ?>">
+                            <input type="hidden" name="p" value="<?= h((string)$page) ?>">
+                            <?php if ((string)$comment['status'] !== 'approved'): ?><button class="button button--ghost" name="action" value="approve" type="submit">通过</button><?php endif; ?>
+                            <?php if ((string)$comment['status'] === 'approved'): ?><button class="button button--ghost" name="action" value="pending" type="submit">撤下</button><?php endif; ?>
+                            <?php if ((string)$comment['status'] !== 'spam'): ?><button class="button button--ghost" name="action" value="spam" type="submit">垃圾</button><?php endif; ?>
+                            <?php if ((int)$comment['is_read'] === 0): ?><button class="button button--ghost" name="action" value="read" type="submit">已读</button><?php endif; ?>
+                            <button class="button button--danger" name="action" value="delete" type="submit" onclick="return confirm('确定永久删除这条评论吗？');">删除</button>
+                          </form>
+                        </td>
+                      </tr>
+                    <?php endforeach; ?>
+                  </tbody>
+                </table>
+              </div>
+
+              <div class="admin-table-footer">
+                <form id="comments-bulk-form" class="comment-bulk-form" method="post" action="<?= h(url_for('moderate_comments')) ?>" onsubmit="return this.elements.action.value !== 'delete' || confirm('确定永久删除选中的评论吗？');">
+                  <?= csrf_field() ?>
+                  <input type="hidden" name="filter" value="<?= h($filter) ?>">
+                  <input type="hidden" name="q" value="<?= h($search) ?>">
+                  <input type="hidden" name="p" value="<?= h((string)$page) ?>">
+                  <label for="comment-bulk-action">批量操作</label>
+                  <select id="comment-bulk-action" name="action" required>
+                    <option value="">请选择</option>
+                    <option value="approve">通过</option>
+                    <option value="pending">转待审核</option>
+                    <option value="spam">标记垃圾</option>
+                    <option value="read">标为已读</option>
+                    <option value="delete">删除</option>
+                  </select>
+                  <button class="button button--secondary" type="submit">应用</button>
+                </form>
+
+                <?php if ($totalPages > 1): ?>
+                  <nav class="admin-pagination" aria-label="评论分页">
+                    <?php if ($page > 1): ?><a class="button button--secondary" href="<?= h(admin_comments_url($filter, $search, $page - 1)) ?>">上一页</a><?php endif; ?>
+                    <span>第 <?= h((string)$page) ?> / <?= h((string)$totalPages) ?> 页</span>
+                    <?php if ($page < $totalPages): ?><a class="button button--secondary" href="<?= h(admin_comments_url($filter, $search, $page + 1)) ?>">下一页</a><?php endif; ?>
+                  </nav>
+                <?php endif; ?>
+              </div>
+            <?php else: ?>
+              <div class="empty-state empty-state--inside"><p><?= $search !== '' ? '没有匹配的评论。' : '当前筛选下没有评论。' ?></p></div>
+            <?php endif; ?>
+          </div>
+        </section>
+      </div>
+    </div>
+    <?php
+    render_layout('评论管理', (string)ob_get_clean(), [
+        'active' => 'comments',
+        'wide' => true,
+        'description' => '博客评论管理',
     ]);
 }
 
@@ -3050,6 +3967,14 @@ function render_admin_settings_page(): void
                 <label for="posts_per_page">首页每页文章数</label>
                 <input id="posts_per_page" name="posts_per_page" type="number" min="1" max="24" value="<?= h(setting('posts_per_page', '6')) ?>">
               </div>
+              <fieldset class="field settings-field">
+                <legend>评论设置</legend>
+                <div class="settings-option-list">
+                  <label class="setting-option"><input id="comments_enabled" name="comments_enabled" type="checkbox" value="1"<?= setting('comments_enabled', '1') === '1' ? ' checked' : '' ?>><span>允许访客提交评论</span></label>
+                  <label class="setting-option"><input name="comments_require_approval" type="checkbox" value="1"<?= setting('comments_require_approval', '1') === '1' ? ' checked' : '' ?>><span>新评论需审核后展示</span></label>
+                  <label class="setting-option"><input name="comments_notify" type="checkbox" value="1"<?= setting('comments_notify', '1') === '1' ? ' checked' : '' ?>><span>新评论显示后台提醒</span></label>
+                </div>
+              </fieldset>
               <div class="field">
                   <label for="pretty_url">伪静态 URL</label>
                   <select id="pretty_url" name="pretty_url">
@@ -3310,6 +4235,141 @@ switch ($action) {
         render_category_page(trim((string)($_GET['slug'] ?? '')));
         break;
 
+    case 'submit_comment':
+        if ($_SERVER['REQUEST_METHOD'] !== 'POST') {
+            redirect_to(url_for('home'));
+        }
+        verify_csrf();
+        $postId = (int)($_POST['post_id'] ?? 0);
+        $post = one(
+            'SELECT * FROM posts WHERE id = ? AND kind = ? AND status = ? AND published_at > 0 AND published_at <= ?',
+            [$postId, 'post', 'published', time()]
+        );
+        if (!$post) {
+            simple_error_page('文章不存在', '这篇文章当前无法接收评论。', 404);
+        }
+        $returnUrl = content_permalink($post) . '#comments';
+        if (setting('comments_enabled', '1') !== '1') {
+            set_comment_notice($postId, 'error', '评论功能当前已关闭。');
+            redirect_to($returnUrl);
+        }
+        $startedAt = (int)($_POST['comment_started_at'] ?? 0);
+        if (!record_comment_attempt()) {
+            [$comment] = validate_comment_input($_POST);
+            forget_comment_form($postId, $startedAt);
+            set_comment_feedback($postId, $comment, ['提交过于频繁，请稍后再试。']);
+            redirect_to($returnUrl);
+        }
+        if (trim((string)($_POST['company'] ?? '')) !== '') {
+            forget_comment_form($postId, $startedAt);
+            set_comment_notice($postId, 'success', '评论已提交，审核通过后会显示。');
+            redirect_to($returnUrl);
+        }
+
+        [$comment, $commentErrors] = validate_comment_input($_POST);
+        $parentId = (int)$comment['parent_id'];
+        $replyTarget = approved_reply_target($postId, $parentId);
+        if ($parentId > 0 && $replyTarget === null) {
+            $commentErrors[] = '回复目标不存在或当前不可用。';
+        }
+        $formExists = !empty($_SESSION['comment_forms'][$postId][(string)$startedAt]);
+        $elapsed = time() - $startedAt;
+        if ($startedAt < 1 || !$formExists || $elapsed < 2 || $elapsed > 7200) {
+            $commentErrors[] = $elapsed < 2 ? '提交过快，请稍后再试。' : '评论表单已失效，请刷新文章后重试。';
+        }
+        forget_comment_form($postId, $startedAt);
+        if ($commentErrors) {
+            set_comment_feedback($postId, $comment, array_values(array_unique($commentErrors)));
+            redirect_to($returnUrl);
+        }
+
+        $linkCount = preg_match_all('#https?://#i', $comment['content']);
+        $needsApproval = setting('comments_require_approval', '1') === '1' || $linkCount > 2;
+        $status = $needsApproval ? 'pending' : 'approved';
+        $isRead = setting('comments_notify', '1') === '1' ? 0 : 1;
+        $now = time();
+        $insertParams = [
+            $postId,
+            $comment['author_name'],
+            $comment['author_email'],
+            $comment['author_url'],
+            $comment['content'],
+            $status,
+            $isRead,
+            comment_ip_hash(),
+            str_sub_u((string)($_SERVER['HTTP_USER_AGENT'] ?? ''), 0, 255),
+            $now,
+            $now,
+        ];
+        $database = db();
+        $duplicateCutoff = time() - 86400;
+        try {
+            $database->exec('BEGIN IMMEDIATE');
+            $duplicateError = duplicate_comment_error($postId, $parentId, $comment['author_email'], $comment['content']);
+            if ($duplicateError !== '') {
+                $database->rollBack();
+                set_comment_feedback($postId, $comment, [$duplicateError]);
+                redirect_to($returnUrl);
+            }
+
+            if ($parentId > 0) {
+                $inserted = q(
+                    "INSERT INTO comments(post_id, parent_id, reply_to_name, author_name, author_email, author_url, content, status, is_read, ip_hash, user_agent, created_at, updated_at)
+                     SELECT ?, parent.id, parent.author_name, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?
+                     FROM comments parent
+                     WHERE parent.id = ? AND parent.post_id = ? AND parent.status = 'approved'
+                       AND NOT EXISTS (
+                           SELECT 1 FROM comments duplicate
+                           WHERE duplicate.post_id = ? AND COALESCE(duplicate.parent_id, 0) = parent.id
+                             AND duplicate.author_email = ? AND duplicate.content = ? AND duplicate.created_at >= ?
+                       )",
+                    array_merge($insertParams, [$parentId, $postId, $postId, $comment['author_email'], $comment['content'], $duplicateCutoff])
+                )->rowCount();
+                if ($inserted !== 1) {
+                    $targetStillAvailable = approved_reply_target($postId, $parentId) !== null;
+                    $database->rollBack();
+                    if ($targetStillAvailable) {
+                        $failureMessage = '这条评论已经提交过了。';
+                    } else {
+                        $comment['parent_id'] = '';
+                        $failureMessage = '回复目标已不可用，请重新选择。';
+                    }
+                    set_comment_feedback($postId, $comment, [$failureMessage]);
+                    redirect_to($returnUrl);
+                }
+            } else {
+                $inserted = q(
+                    "INSERT INTO comments(post_id, parent_id, reply_to_name, author_name, author_email, author_url, content, status, is_read, ip_hash, user_agent, created_at, updated_at)
+                     SELECT ?, NULL, '', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?
+                     WHERE NOT EXISTS (
+                         SELECT 1 FROM comments duplicate
+                         WHERE duplicate.post_id = ? AND COALESCE(duplicate.parent_id, 0) = 0
+                           AND duplicate.author_email = ? AND duplicate.content = ? AND duplicate.created_at >= ?
+                     )",
+                    array_merge($insertParams, [$postId, $comment['author_email'], $comment['content'], $duplicateCutoff])
+                )->rowCount();
+                if ($inserted !== 1) {
+                    $database->rollBack();
+                    set_comment_feedback($postId, $comment, ['这条评论已经提交过了。']);
+                    redirect_to($returnUrl);
+                }
+            }
+            $database->commit();
+        } catch (Throwable $exception) {
+            if ($database->inTransaction()) {
+                $database->rollBack();
+            }
+            throw $exception;
+        }
+        $_SESSION['comment_identity'] = [
+            'author_name' => $comment['author_name'],
+            'author_email' => $comment['author_email'],
+            'author_url' => $comment['author_url'],
+        ];
+        set_comment_notice($postId, 'success', $status === 'approved' ? '评论已发布。' : '评论已提交，审核通过后会显示。');
+        redirect_to($returnUrl);
+        break;
+
     case 'post':
         $slug = trim((string)($_GET['slug'] ?? $_GET['id'] ?? ''));
         $post = fetch_post_by_identifier($slug, is_admin());
@@ -3383,6 +4443,10 @@ switch ($action) {
 
     case 'admin_posts':
         render_admin_posts_page();
+        break;
+
+    case 'admin_comments':
+        render_admin_comments_page();
         break;
 
     case 'admin_categories':
@@ -3470,6 +4534,9 @@ switch ($action) {
             'footer_beian' => trim((string)($_POST['footer_beian'] ?? '')),
             'posts_per_page' => (string)$postsPerPage,
             'pretty_url' => $prettyUrl,
+            'comments_enabled' => isset($_POST['comments_enabled']) ? '1' : '0',
+            'comments_require_approval' => isset($_POST['comments_require_approval']) ? '1' : '0',
+            'comments_notify' => isset($_POST['comments_notify']) ? '1' : '0',
             'site_tagline' => trim((string)($_POST['site_tagline'] ?? '')),
             'site_description' => trim((string)($_POST['site_description'] ?? '')),
             'site_keywords' => trim((string)($_POST['site_keywords'] ?? '')),
@@ -3478,6 +4545,59 @@ switch ($action) {
         ]);
         set_flash('success', '站点设置已更新。');
         redirect_to(url_for('admin_settings'));
+        break;
+
+    case 'mark_comments_read':
+        require_admin();
+        if ($_SERVER['REQUEST_METHOD'] !== 'POST') { redirect_to(url_for('admin_comments')); }
+        verify_csrf();
+        $filter = trim((string)($_POST['filter'] ?? 'all'));
+        $search = trim((string)($_POST['q'] ?? ''));
+        $page = max(1, (int)($_POST['p'] ?? 1));
+        $updated = q('UPDATE comments SET is_read = 1, updated_at = ? WHERE is_read = 0', [time()])->rowCount();
+        set_flash('success', $updated > 0 ? '所有评论通知已标为已读。' : '当前没有未读评论。');
+        redirect_to(admin_comments_url($filter, $search, $page));
+        break;
+
+    case 'moderate_comments':
+        require_admin();
+        if ($_SERVER['REQUEST_METHOD'] !== 'POST') { redirect_to(url_for('admin_comments')); }
+        verify_csrf();
+        $filter = trim((string)($_POST['filter'] ?? 'all'));
+        $search = trim((string)($_POST['q'] ?? ''));
+        $page = max(1, (int)($_POST['p'] ?? 1));
+        $returnUrl = admin_comments_url($filter, $search, $page);
+        $action = trim((string)($_POST['action'] ?? ''));
+        $ids = $_POST['comment_ids'] ?? [];
+        if (!is_array($ids)) { $ids = []; }
+        $singleId = (int)($_POST['comment_id'] ?? 0);
+        if ($singleId > 0) { $ids = [$singleId]; }
+        $ids = array_slice(array_values(array_unique(array_filter(array_map('intval', $ids), static fn(int $id): bool => $id > 0))), 0, 100);
+        if (!in_array($action, ['approve', 'pending', 'spam', 'read', 'delete'], true) || $ids === []) {
+            set_flash('error', $ids === [] ? '请先选择评论。' : '未知的评论操作。');
+            redirect_to($returnUrl);
+        }
+
+        $placeholders = implode(',', array_fill(0, count($ids), '?'));
+        if ($action === 'delete') {
+            $affected = q("DELETE FROM comments WHERE id IN ({$placeholders})", $ids)->rowCount();
+            $message = '已删除 ' . $affected . ' 条评论。';
+        } elseif ($action === 'read') {
+            $params = array_merge([time()], $ids);
+            $affected = q("UPDATE comments SET is_read = 1, updated_at = ? WHERE id IN ({$placeholders})", $params)->rowCount();
+            $message = '已将 ' . $affected . ' 条评论标为已读。';
+        } else {
+            $status = ['approve' => 'approved', 'pending' => 'pending', 'spam' => 'spam'][$action];
+            $params = array_merge([$status, time()], $ids);
+            $affected = q("UPDATE comments SET status = ?, is_read = 1, updated_at = ? WHERE id IN ({$placeholders})", $params)->rowCount();
+            $message = match ($status) {
+                'approved' => '已通过 ' . $affected . ' 条评论。',
+                'spam' => '已将 ' . $affected . ' 条评论标记为垃圾。',
+                default => '已将 ' . $affected . ' 条评论转为待审核。',
+            };
+        }
+        set_flash('success', $message);
+        redirect_to($returnUrl);
         break;
 
     case 'save_category':

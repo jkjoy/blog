@@ -256,5 +256,77 @@ document.addEventListener("DOMContentLoaded", () => {
   });
 });
 
+document.addEventListener("DOMContentLoaded", () => {
+  document.querySelectorAll(".comments").forEach((root) => {
+    const form = root.querySelector(".comment-form");
+    if (!form) {
+      root.addEventListener("click", (event) => event.stopPropagation());
+      return;
+    }
+
+    const parentInput = form.querySelector("[data-comment-parent-id]");
+    const replyState = form.querySelector("[data-comment-reply-state]");
+    const replyName = form.querySelector("[data-comment-reply-name]");
+    const cancelButton = form.querySelector("[data-comment-reply-cancel]");
+    const content = form.querySelector("#comment-content");
+    const replyButtons = [...root.querySelectorAll("[data-comment-reply]")];
+    let activeReplyButton = null;
+
+    const setReply = (button, focusContent = true) => {
+      const commentId = button.dataset.commentId || "";
+      const author = button.dataset.commentAuthor || "";
+      if (!parentInput || !replyState || !replyName || !content || !/^\d+$/.test(commentId)) return;
+
+      parentInput.value = commentId;
+      replyState.hidden = false;
+      activeReplyButton = button;
+      replyButtons.forEach((item) => item.setAttribute("aria-pressed", item === button ? "true" : "false"));
+      cancelButton?.setAttribute("aria-label", `取消回复 @${author}`);
+
+      if (focusContent) {
+        replyName.textContent = "";
+        requestAnimationFrame(() => {
+          if (parentInput.value !== commentId) return;
+          replyName.textContent = `@${author}`;
+          form.scrollIntoView({ behavior: window.matchMedia("(prefers-reduced-motion: reduce)").matches ? "auto" : "smooth", block: "start" });
+          requestAnimationFrame(() => {
+            if (parentInput.value === commentId) content.focus({ preventScroll: true });
+          });
+        });
+      } else {
+        replyName.textContent = `@${author}`;
+      }
+    };
+
+    const clearReply = () => {
+      if (!parentInput || !replyState || !replyName) return;
+      const returnTarget = activeReplyButton;
+      parentInput.value = "";
+      replyName.textContent = "";
+      replyState.hidden = true;
+      activeReplyButton = null;
+      replyButtons.forEach((item) => item.setAttribute("aria-pressed", "false"));
+      cancelButton?.setAttribute("aria-label", "取消回复");
+      (returnTarget || content)?.focus();
+    };
+
+    root.addEventListener("click", (event) => {
+      event.stopPropagation();
+      if (!(event.target instanceof Element)) return;
+
+      const replyButton = event.target.closest("[data-comment-reply]");
+      if (replyButton && root.contains(replyButton)) {
+        setReply(replyButton);
+        return;
+      }
+
+      if (event.target.closest("[data-comment-reply-cancel]")) clearReply();
+    });
+
+    const initialReply = replyButtons.find((button) => button.dataset.commentId === parentInput?.value);
+    if (initialReply) setReply(initialReply, false);
+  });
+});
+
 // Terminal public interface
 document.addEventListener('DOMContentLoaded',()=>{const term=document.querySelector('.terminal'),output=document.querySelector('#output'),input=document.querySelector('#input'),shown=document.querySelector('#input-text'),ghost=document.querySelector('#ghost-text'),scan=document.querySelector('#scanlines');if(!term||!input)return;const history=[];let hi=0;const routes={home:term.dataset.home,tags:term.dataset.tags,links:term.dataset.links,archives:term.dataset.archives};const commands=['help','ls','cat','cd','pwd','clear','history','theme','crt','date','home','tags','links','archives'];const print=(text,cls='')=>{const el=document.createElement('div');el.className='line '+cls;el.textContent=text;output.append(el);output.scrollTop=output.scrollHeight};const sync=()=>{shown.textContent=input.value;const hit=commands.find(x=>x.startsWith(input.value)&&x!==input.value);ghost.textContent=input.value&&hit?hit.slice(input.value.length):''};const run=raw=>{const value=raw.trim(),[cmd,arg]=value.split(/\s+/,2);print(`visitor@devlog:~$ ${value}`,'cmd-echo');if(!value)return;if(routes[cmd]){location.href=routes[cmd];return}if(cmd==='clear'){output.innerHTML='';return}if(cmd==='pwd'){print('~','green');return}if(cmd==='date'){print(new Date().toString(),'green');return}if(cmd==='crt'){scan.classList.toggle('disabled');print(`CRT scanlines: ${scan.classList.contains('disabled')?'disabled':'enabled'}`,'dim');return}if(cmd==='history'){history.forEach((x,i)=>print(`${String(i+1).padStart(4)}  ${x}`,'dim'));return}if(cmd==='theme'){const themes={phosphor:['#7ec699','#a8e8a8'],amber:['#e8a87c','#ffb86c'],cyan:['#7aa6da','#a8d0f0']},t=themes[arg];if(t){document.documentElement.style.setProperty('--green',t[0]);document.documentElement.style.setProperty('--bright',t[1]);print(`theme: switched to ${arg}`,'green')}else print('themes: phosphor, amber, cyan','dim');return}if(cmd==='ls'){print('home/  tags/  links/  archives/  rss.xml','green');document.querySelectorAll('.posts .post a').forEach(a=>print(a.textContent+'.md','blue'));return}if(cmd==='cd'||cmd==='cat'){print(`Use: ${cmd==='cd'?'cd tags':'open an article link from ls'}`,'dim');return}if(cmd==='help'){print('COMMANDS','amber');print('  ls                         list posts and sections');print('  home|tags|links|archives   navigate site');print('  clear|history|pwd          shell utilities');print('  theme <name>               phosphor, amber, cyan');print('  crt|date                    display controls');return}print(`${cmd}: command not found. Type "help".`,'red')};input.addEventListener('input',sync);input.addEventListener('keydown',e=>{if(e.key==='Enter'){e.preventDefault();if(input.value.trim()){history.push(input.value.trim());hi=history.length}run(input.value);input.value='';sync()}else if(e.key==='Tab'&&ghost.textContent){e.preventDefault();input.value+=ghost.textContent;sync()}else if(e.key==='ArrowUp'){e.preventDefault();if(hi>0)input.value=history[--hi]||'';sync()}else if(e.key==='ArrowDown'){e.preventDefault();input.value=hi<history.length-1?history[++hi]:(hi=history.length,'');sync()}else if(e.ctrlKey&&e.key.toLowerCase()==='l'){e.preventDefault();output.innerHTML=''}});document.addEventListener('click',()=>input.focus());const size=()=>{const i=document.querySelector('#term-info');if(i)i.textContent=`${Math.floor(output.clientWidth/8)}×${Math.floor(output.clientHeight/16)}`};addEventListener('resize',size);size();setTimeout(()=>document.querySelector('#turn-on')?.remove(),800);input.focus()});

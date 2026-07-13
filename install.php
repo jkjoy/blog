@@ -31,6 +31,9 @@ function i_default_settings(): array
         'custom_head_code' => '',
         'favicon_url' => 'logo.png',
         'footer_beian' => '',
+        'comments_enabled' => '1',
+        'comments_require_approval' => '1',
+        'comments_notify' => '1',
         'posts_per_page' => '6',
         'pretty_url' => '0',
     ];
@@ -232,7 +235,7 @@ function i_render_page(string $title, string $body): void
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title><?= i_h($title) ?></title>
-  <link rel="stylesheet" href="<?= i_h(i_asset_url('index.css')) ?>?v=v0.1.6">
+  <link rel="stylesheet" href="<?= i_h(i_asset_url('index.css')) ?>?v=v1.1.1">
 </head>
 <body>
   <div class="site-frame">
@@ -345,7 +348,7 @@ function i_render_form(array $form, array $errors = []): void
         <div class="panel__body">
           <ul class="archive-items archive-items--plain">
             <li class="archive-item"><span>随机文件名 SQLite 数据库</span></li>
-            <li class="archive-item"><span>站点设置、用户、内容与分类数据表</span></li>
+            <li class="archive-item"><span>站点设置、用户、内容、分类与评论数据表</span></li>
             <li class="archive-item"><span>默认分类、归属该分类的欢迎文章与默认关于页</span></li>
             <li class="archive-item"><span>`data/install.lock` 安装锁</span></li>
             <li class="archive-item"><span>`cache/settings.php` 站点配置缓存</span></li>
@@ -533,9 +536,34 @@ $db->exec(
         updated_at INTEGER NOT NULL
     )'
 );
+$db->exec(
+    'CREATE TABLE IF NOT EXISTS comments(
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        post_id INTEGER NOT NULL,
+        parent_id INTEGER,
+        reply_to_name TEXT NOT NULL DEFAULT \'\',
+        author_name TEXT NOT NULL,
+        author_email TEXT NOT NULL,
+        author_url TEXT NOT NULL DEFAULT \'\',
+        content TEXT NOT NULL,
+        status TEXT NOT NULL DEFAULT \'pending\',
+        is_read INTEGER NOT NULL DEFAULT 0,
+        ip_hash TEXT NOT NULL DEFAULT \'\',
+        user_agent TEXT NOT NULL DEFAULT \'\',
+        created_at INTEGER NOT NULL,
+        updated_at INTEGER NOT NULL,
+        FOREIGN KEY(post_id) REFERENCES posts(id) ON DELETE CASCADE,
+        FOREIGN KEY(parent_id) REFERENCES comments(id) ON DELETE SET NULL
+    )'
+);
 $db->exec('CREATE INDEX IF NOT EXISTS idx_posts_published_pinned ON posts(kind, status, is_pinned DESC, published_at DESC, id DESC)');
 $db->exec('CREATE INDEX IF NOT EXISTS idx_posts_category ON posts(category_id, kind, status, published_at DESC)');
 $db->exec('CREATE INDEX IF NOT EXISTS idx_categories_sort ON categories(sort_order ASC, id DESC)');
+$db->exec('CREATE INDEX IF NOT EXISTS idx_comments_post_public ON comments(post_id, status, created_at, id)');
+$db->exec('CREATE INDEX IF NOT EXISTS idx_comments_moderation ON comments(status, created_at DESC, id DESC)');
+$db->exec('CREATE INDEX IF NOT EXISTS idx_comments_unread ON comments(is_read, created_at DESC, id DESC)');
+$db->exec('CREATE INDEX IF NOT EXISTS idx_comments_ip_recent ON comments(ip_hash, created_at DESC)');
+$db->exec('CREATE INDEX IF NOT EXISTS idx_comments_parent ON comments(parent_id, created_at, id)');
 
 $now = time();
 $settings = i_default_settings();
