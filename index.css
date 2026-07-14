@@ -3022,6 +3022,7 @@ textarea:focus {
 
 .comment-item__reply-target {
   min-width: 0;
+  max-width: 100%;
   color: var(--blue);
   overflow-wrap: anywhere;
   text-decoration: none;
@@ -3030,11 +3031,19 @@ textarea:focus {
 a.comment-item__reply-target {
   display: inline-flex;
   align-items: center;
+  justify-content: center;
+  min-width: 40px;
   min-height: 40px;
+  vertical-align: middle;
 }
 
-.comment-item__reply-target:hover,
-.comment-item__reply-target:focus-visible {
+.comment-item__reply-label {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+a.comment-item__reply-target:hover,
+a.comment-item__reply-target:focus-visible {
   color: var(--bright);
   outline: 0;
   text-shadow: 0 0 6px var(--glow);

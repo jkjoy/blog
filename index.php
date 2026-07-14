@@ -13,7 +13,7 @@ session_set_cookie_params([
 ]);
 session_start();
 
-const APP_VERSION = 'v1.1.3';
+const APP_VERSION = 'v1.1.4';
 const DATA_DIR = __DIR__ . '/data';
 const CACHE_DIR = __DIR__ . '/cache';
 const UPLOAD_DIR = __DIR__ . '/uploads';
@@ -311,6 +311,7 @@ function ensure_schema(PDO $pdo): void
     $pdo->exec('CREATE INDEX IF NOT EXISTS idx_comments_ip_recent ON comments(ip_hash, created_at DESC)');
     $pdo->exec('CREATE INDEX IF NOT EXISTS idx_comments_parent ON comments(parent_id, created_at, id)');
     $pdo->exec('CREATE INDEX IF NOT EXISTS idx_comments_user_recent ON comments(user_id, created_at DESC)');
+    $pdo->exec("CREATE INDEX IF NOT EXISTS idx_comments_visitor_email_approval ON comments(author_email COLLATE NOCASE, status) WHERE user_id IS NULL");
 
     $defaultCategoryId = (int)($pdo->query("SELECT id FROM categories WHERE slug = 'default' ORDER BY id LIMIT 1")->fetchColumn() ?: 0);
     if ($defaultCategoryId < 1) {
@@ -1914,6 +1915,19 @@ function approved_reply_target(int $postId, int $parentId): ?array
     );
 }
 
+function visitor_email_has_approved_comment(string $email): bool
+{
+    $email = str_lower_u(trim($email));
+    if ($email === '' || !filter_var($email, FILTER_VALIDATE_EMAIL)) {
+        return false;
+    }
+
+    return val(
+        'SELECT 1 FROM comments WHERE user_id IS NULL AND author_email = ? COLLATE NOCASE AND status = ? LIMIT 1',
+        [$email, 'approved']
+    ) !== false;
+}
+
 function comment_admin_counts(): array
 {
     static $counts = null;
@@ -3009,13 +3023,6 @@ function render_comments_section(array $post, array $form = [], array $errors = 
                 <?php else: ?>
                   <strong class="comment-item__author">@<?= h((string)$comment['author_name']) ?></strong>
                 <?php endif; ?>
-                <?php if ($replyName !== ''): ?>
-                  <?php if ($replyAnchorVisible): ?>
-                    <a class="comment-item__reply-target" href="#comment-<?= h((string)$replyParentId) ?>"><span class="sr-only">回复给 @</span><span aria-hidden="true">+@</span><?= h($replyName) ?></a>
-                  <?php else: ?>
-                    <span class="comment-item__reply-target"><span class="sr-only">回复给 @</span><span aria-hidden="true">+@</span><?= h($replyName) ?></span>
-                  <?php endif; ?>
-                <?php endif; ?>
                 <time class="comment-item__time" datetime="<?= h(date(DATE_ATOM, (int)$comment['created_at'])) ?>"><?= h(pretty_date((int)$comment['created_at'], true)) ?></time>
                 <?php if ($accepting): ?>
                   <button class="comment-reply-button" type="button" data-comment-reply data-comment-id="<?= h((string)$comment['id']) ?>" data-comment-author="<?= h((string)$comment['author_name']) ?>" aria-controls="comment-form" aria-pressed="<?= $replyTargetId === (int)$comment['id'] ? 'true' : 'false' ?>" aria-label="回复 @<?= h((string)$comment['author_name']) ?>" title="回复 @<?= h((string)$comment['author_name']) ?>">
@@ -3024,7 +3031,16 @@ function render_comments_section(array $post, array $form = [], array $errors = 
                   </button>
                 <?php endif; ?>
               </header>
-              <div class="comment-item__body"><?= nl2br(h((string)$comment['content']), false) ?></div>
+              <div class="comment-item__body">
+                <?php if ($replyName !== ''): ?>
+                  <?php if ($replyAnchorVisible): ?>
+                    <a class="comment-item__reply-target" href="#comment-<?= h((string)$replyParentId) ?>"><span class="sr-only">回复给 @<?= h($replyName) ?></span><span class="comment-item__reply-label" aria-hidden="true">@<?= h($replyName) ?></span></a>
+                  <?php else: ?>
+                    <span class="comment-item__reply-target"><span class="sr-only">回复给 @<?= h($replyName) ?></span><span class="comment-item__reply-label" aria-hidden="true">@<?= h($replyName) ?></span></span>
+                  <?php endif; ?>
+                <?php endif; ?>
+                <span class="comment-item__content"><?= nl2br(h((string)$comment['content']), false) ?></span>
+              </div>
             </li>
           <?php endforeach; ?>
         </ol>
@@ -4250,7 +4266,7 @@ function render_admin_settings_page(): void
                 <legend>评论设置</legend>
                 <div class="settings-option-list">
                   <label class="setting-option"><input id="comments_enabled" name="comments_enabled" type="checkbox" value="1"<?= setting('comments_enabled', '1') === '1' ? ' checked' : '' ?>><span>允许访客提交评论</span></label>
-                  <label class="setting-option"><input name="comments_require_approval" type="checkbox" value="1"<?= setting('comments_require_approval', '1') === '1' ? ' checked' : '' ?>><span>新评论需审核后展示</span></label>
+                  <label class="setting-option"><input name="comments_require_approval" type="checkbox" value="1"<?= setting('comments_require_approval', '1') === '1' ? ' checked' : '' ?>><span>访客首次留言需审核后展示（按邮箱判断）</span></label>
                   <label class="setting-option"><input name="comments_notify" type="checkbox" value="1"<?= setting('comments_notify', '1') === '1' ? ' checked' : '' ?>><span>新评论显示后台提醒</span></label>
                 </div>
               </fieldset>
@@ -4568,7 +4584,11 @@ switch ($action) {
         }
 
         $linkCount = preg_match_all('#https?://#i', $comment['content']);
-        $needsApproval = setting('comments_require_approval', '1') === '1' || $linkCount > 2;
+        $isAuthenticatedAdmin = $authenticatedIdentity !== null;
+        $hasApprovedVisitorEmail = !$isAuthenticatedAdmin && visitor_email_has_approved_comment($comment['author_email']);
+        $needsApproval = !$isAuthenticatedAdmin
+            && !$hasApprovedVisitorEmail
+            && (setting('comments_require_approval', '1') === '1' || $linkCount > 2);
         $status = $needsApproval ? 'pending' : 'approved';
         $isRead = setting('comments_notify', '1') === '1' ? 0 : 1;
         $now = time();

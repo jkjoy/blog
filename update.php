@@ -132,12 +132,14 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 $db->exec('ALTER TABLE comments ADD COLUMN user_id INTEGER REFERENCES users(id) ON DELETE SET NULL');
                 $userFieldAdded = true;
             }
+            $emailApprovalIndexExists = (bool)$db->query("SELECT 1 FROM sqlite_master WHERE type = 'index' AND name = 'idx_comments_visitor_email_approval' LIMIT 1")->fetchColumn();
             $db->exec('CREATE INDEX IF NOT EXISTS idx_comments_post_public ON comments(post_id, status, created_at, id)');
             $db->exec('CREATE INDEX IF NOT EXISTS idx_comments_moderation ON comments(status, created_at DESC, id DESC)');
             $db->exec('CREATE INDEX IF NOT EXISTS idx_comments_unread ON comments(is_read, created_at DESC, id DESC)');
             $db->exec('CREATE INDEX IF NOT EXISTS idx_comments_ip_recent ON comments(ip_hash, created_at DESC)');
             $db->exec('CREATE INDEX IF NOT EXISTS idx_comments_parent ON comments(parent_id, created_at, id)');
             $db->exec('CREATE INDEX IF NOT EXISTS idx_comments_user_recent ON comments(user_id, created_at DESC)');
+            $db->exec("CREATE INDEX IF NOT EXISTS idx_comments_visitor_email_approval ON comments(author_email COLLATE NOCASE, status) WHERE user_id IS NULL");
             if (!$commentsExist) {
                 $changes[] = '新增评论数据表和查询索引';
             } elseif ($replyFieldsAdded) {
@@ -145,6 +147,9 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             }
             if ($userFieldAdded) {
                 $changes[] = '新增登录用户评论关联字段和查询索引';
+            }
+            if ($commentsExist && !$emailApprovalIndexExists) {
+                $changes[] = '新增评论邮箱审核查询索引';
             }
             $db->commit();
             $message = $changes ? '数据库升级完成：' . implode('、', $changes) . '。' : '数据库已经是最新版本，无需变更。';
