@@ -1289,6 +1289,24 @@ textarea:focus {
   transform: scale(0.96);
 }
 
+.theme-admin .auth-link-row {
+  margin: -4px 0 0;
+  color: var(--admin-muted);
+  font: 600 13px/1.4 var(--font-ui);
+  text-align: center;
+}
+
+.theme-admin .auth-link-row a {
+  color: var(--admin-soft);
+  text-decoration: none;
+}
+
+.theme-admin .auth-link-row a:hover,
+.theme-admin .auth-link-row a:focus-visible {
+  color: var(--admin-text);
+  outline: 0;
+}
+
 .theme-admin:not(.theme-admin--guest) {
   overflow-x: hidden;
 }

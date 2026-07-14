@@ -13,7 +13,7 @@ session_set_cookie_params([
 ]);
 session_start();
 
-const APP_VERSION = 'v1.1.2';
+const APP_VERSION = 'v1.1.3';
 const DATA_DIR = __DIR__ . '/data';
 const CACHE_DIR = __DIR__ . '/cache';
 const UPLOAD_DIR = __DIR__ . '/uploads';
@@ -172,6 +172,17 @@ function ensure_schema(PDO $pdo): void
             social_links TEXT NOT NULL DEFAULT '',
             signature TEXT NOT NULL DEFAULT '',
             created_at INTEGER NOT NULL
+        )"
+    );
+    $pdo->exec(
+        "CREATE TABLE IF NOT EXISTS password_resets(
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            user_id INTEGER NOT NULL,
+            token_hash TEXT NOT NULL UNIQUE,
+            expires_at INTEGER NOT NULL,
+            used_at INTEGER NOT NULL DEFAULT 0,
+            created_at INTEGER NOT NULL,
+            FOREIGN KEY(user_id) REFERENCES users(id) ON DELETE CASCADE
         )"
     );
     $pdo->exec(
@@ -468,12 +479,28 @@ function verify_csrf(): void
     }
 }
 
+function normalize_version(string $version): string
+{
+    return preg_replace('/[^0-9A-Za-z.+-]/', '', ltrim(trim($version), 'vV')) ?: '0';
+}
+
+function update_available_for(string $latest, string $current = APP_VERSION): bool
+{
+    $latest = normalize_version($latest);
+    $current = normalize_version($current);
+    return $latest !== $current && version_compare($latest, $current, '>');
+}
+
 function github_update_info(bool $refresh = false): array
 {
     ensure_runtime_dirs();
     if (!$refresh && is_file(UPDATE_CACHE_FILE) && time() - (int)filemtime(UPDATE_CACHE_FILE) < 21600) {
         $cached = json_decode((string)file_get_contents(UPDATE_CACHE_FILE), true);
-        if (is_array($cached)) { return $cached; }
+        if (is_array($cached)) {
+            $cached['current'] = APP_VERSION;
+            $cached['available'] = update_available_for((string)($cached['latest'] ?? ''));
+            return $cached;
+        }
     }
     $result = ['available' => false, 'current' => APP_VERSION, 'latest' => '', 'download_url' => '', 'error' => ''];
     if (!function_exists('curl_init')) {
@@ -495,7 +522,7 @@ function github_update_info(bool $refresh = false): array
         if ($latest !== '' && filter_var($download, FILTER_VALIDATE_URL)) {
             $result['latest'] = $latest;
             $result['download_url'] = $download;
-            $result['available'] = version_compare(ltrim($latest, 'vV'), ltrim(APP_VERSION, 'vV'), '>');
+            $result['available'] = update_available_for($latest);
         }
     }
     file_put_contents(UPDATE_CACHE_FILE, json_encode($result, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES), LOCK_EX);
@@ -529,7 +556,7 @@ function install_github_update(array $update): string
         $newIndex = $source . '/index.php';
         if (!is_file($newIndex)) { throw new RuntimeException('更新包结构无效。'); }
         $code = (string)file_get_contents($newIndex);
-        if (!preg_match("/const APP_VERSION = '([^']+)'/", $code, $match) || !version_compare(ltrim($match[1], 'vV'), ltrim(APP_VERSION, 'vV'), '>')) { throw new RuntimeException('更新包版本无效或不高于当前版本。'); }
+        if (!preg_match("/const APP_VERSION = '([^']+)'/", $code, $match) || !update_available_for((string)$match[1])) { throw new RuntimeException('更新包版本无效或不高于当前版本。'); }
         $files = ['index.php', 'index.css', 'index.js', 'install.php', 'update.php', 'README.md', 'logo.png', '.htaccess'];
         $backup = CACHE_DIR . '/update-backup-' . date('Ymd-His');
         mkdir($backup, 0755, true);
@@ -578,6 +605,36 @@ function login_rate_state(bool $recordFailure = false, bool $clear = false): arr
     }
     if ($recordFailure) { $state['count'] = (int)$state['count'] + 1; }
     if ($clear) { $state = ['count' => 0, 'since' => $now]; }
+    ftruncate($handle, 0);
+    rewind($handle);
+    fwrite($handle, json_encode($state));
+    fflush($handle);
+    flock($handle, LOCK_UN);
+    fclose($handle);
+    return $state;
+}
+
+function password_reset_rate_file(): string
+{
+    $client = (string)($_SERVER['REMOTE_ADDR'] ?? 'unknown');
+    return CACHE_DIR . '/password-reset-rate-' . hash('sha256', $client) . '.json';
+}
+
+function password_reset_rate_state(bool $recordAttempt = false): array
+{
+    ensure_runtime_dirs();
+    $file = password_reset_rate_file();
+    $handle = fopen($file, 'c+');
+    if ($handle === false) { return ['count' => 0, 'since' => time()]; }
+
+    flock($handle, LOCK_EX);
+    $raw = stream_get_contents($handle);
+    $state = json_decode($raw ?: '', true);
+    $now = time();
+    if (!is_array($state) || $now - (int)($state['since'] ?? 0) >= 900) {
+        $state = ['count' => 0, 'since' => $now];
+    }
+    if ($recordAttempt) { $state['count'] = (int)$state['count'] + 1; }
     ftruncate($handle, 0);
     rewind($handle);
     fwrite($handle, json_encode($state));
@@ -798,6 +855,25 @@ function require_admin(): void
     }
 }
 
+function require_admin_post(string $fallbackUrl): void
+{
+    require_admin();
+    if ($_SERVER['REQUEST_METHOD'] !== 'POST') {
+        redirect_to($fallbackUrl);
+    }
+    verify_csrf();
+}
+
+function positive_int_ids(mixed $values, int $limit = 100): array
+{
+    $values = is_array($values) ? $values : [$values];
+    return array_slice(
+        array_values(array_unique(array_filter(array_map('intval', $values), static fn(int $id): bool => $id > 0))),
+        0,
+        $limit
+    );
+}
+
 function set_route_params(array $params): void
 {
     foreach ($params as $key => $value) {
@@ -891,6 +967,16 @@ function apply_pretty_route(): void
         return;
     }
 
+    if (preg_match('#^/forgot-password/?$#i', $path)) {
+        set_route_params(['a' => 'forgot_password']);
+        return;
+    }
+
+    if (preg_match('#^/reset-password/?$#i', $path)) {
+        set_route_params(['a' => 'reset_password']);
+        return;
+    }
+
     if (preg_match('#^/(login|logout|admin|write)/?$#i', $path, $matches)) {
         set_route_params(['a' => str_lower_u($matches[1])]);
         return;
@@ -968,6 +1054,8 @@ function url_for(string $route, array $params = []): string
         'category' => $pretty ? app_path('/category/' . rawurlencode((string)($params['slug'] ?? ''))) : script_url() . '?a=category&slug=' . rawurlencode((string)($params['slug'] ?? '')),
         'page' => $pretty ? app_path('/' . rawurlencode((string)($params['slug'] ?? ''))) : script_url() . '?a=page&slug=' . rawurlencode((string)($params['slug'] ?? '')),
         'login' => $pretty ? app_path('/login') : script_url() . '?a=login',
+        'forgot_password' => $pretty ? app_path('/forgot-password') : script_url() . '?a=forgot_password',
+        'reset_password' => $pretty ? app_path('/reset-password') : script_url() . '?a=reset_password',
         'logout' => $pretty ? app_path('/logout') : script_url() . '?a=logout',
         'admin' => $pretty ? app_path('/admin') : script_url() . '?a=admin',
         'admin_posts' => $pretty ? app_path('/admin/posts') : script_url() . '?a=admin_posts',
@@ -2365,6 +2453,22 @@ function validate_post_input(array $input, ?array $existing = null): array
     ], $errors];
 }
 
+function post_form_from_request(array $input): array
+{
+    return [
+        'kind' => (string)($input['kind'] ?? 'post'),
+        'category_id' => (string)($input['category_id'] ?? ''),
+        'title' => (string)($input['title'] ?? ''),
+        'slug' => (string)($input['slug'] ?? ''),
+        'tags_input' => (string)($input['tags_input'] ?? ''),
+        'excerpt' => (string)($input['excerpt'] ?? ''),
+        'content' => (string)($input['content'] ?? ''),
+        'status' => (string)($input['status'] ?? 'draft'),
+        'published_at' => (string)($input['published_at'] ?? ''),
+        'is_pinned' => isset($input['is_pinned']) ? '1' : '0',
+    ];
+}
+
 function render_layout(string $title, string $content, array $options = []): void
 {
     $siteName = setting('site_name', default_settings()['site_name']);
@@ -3234,6 +3338,7 @@ function render_login_page(string $error = '', array $form = []): void
             <div class="action-row auth-actions">
               <button class="button" type="submit">登录后台</button>
             </div>
+            <p class="auth-link-row"><a href="<?= h(url_for('forgot_password')) ?>">忘记密码？</a></p>
           </form>
         </div>
       </section>
@@ -3244,6 +3349,139 @@ function render_login_page(string $error = '', array $form = []): void
     render_layout('登录', $content, [
         'active' => 'login',
         'description' => '博客后台登录',
+    ]);
+}
+
+function password_reset_notice_path(string $token): string
+{
+    ensure_runtime_dirs();
+    return CACHE_DIR . '/password-reset-' . substr(hash('sha256', $token), 0, 16) . '.txt';
+}
+
+function create_password_reset(array $user): array
+{
+    $token = bin2hex(random_bytes(32));
+    $now = time();
+    $expiresAt = $now + 3600;
+
+    q('UPDATE password_resets SET used_at = ? WHERE user_id = ? AND used_at = 0', [$now, (int)$user['id']]);
+    q(
+        'INSERT INTO password_resets(user_id, token_hash, expires_at, used_at, created_at) VALUES(?,?,?,?,?)',
+        [(int)$user['id'], hash('sha256', $token), $expiresAt, 0, $now]
+    );
+
+    return [$token, $expiresAt];
+}
+
+function send_password_reset_notice(array $user, string $token, int $expiresAt): bool
+{
+    $link = absolute_url(url_with_query(url_for('reset_password'), ['token' => $token]));
+    $siteName = setting('site_name', default_settings()['site_name']);
+    $body = "你正在重置 {$siteName} 的管理员密码。\n\n重置链接：{$link}\n\n链接将在 " . date('Y-m-d H:i:s', $expiresAt) . " 过期。如果不是你本人操作，请忽略这封邮件。";
+    $sent = false;
+    $email = trim((string)($user['email'] ?? ''));
+
+    if ($email !== '' && filter_var($email, FILTER_VALIDATE_EMAIL) && function_exists('mail')) {
+        $subject = '重置 ' . $siteName . ' 管理员密码';
+        $headers = [
+            'Content-Type: text/plain; charset=UTF-8',
+            'From: ' . preg_replace('/[\r\n]+/', '', $siteName) . ' <no-reply@' . parse_url(site_root_url(), PHP_URL_HOST) . '>',
+        ];
+        $sent = @mail($email, '=?UTF-8?B?' . base64_encode($subject) . '?=', $body, implode("\r\n", $headers));
+    }
+
+    file_put_contents(password_reset_notice_path($token), $body . "\n", LOCK_EX);
+    return $sent;
+}
+
+function password_reset_by_token(string $token): ?array
+{
+    if (!preg_match('/^[a-f0-9]{64}$/', $token)) {
+        return null;
+    }
+
+    $reset = one(
+        'SELECT r.*, u.username, u.email FROM password_resets r INNER JOIN users u ON u.id = r.user_id WHERE r.token_hash = ? AND r.used_at = 0 AND r.expires_at >= ?',
+        [hash('sha256', $token), time()]
+    );
+
+    return $reset ?: null;
+}
+
+function render_forgot_password_page(string $notice = '', string $error = '', array $form = []): void
+{
+    ob_start();
+    ?>
+    <div class="auth-layout">
+      <section class="panel auth-panel admin-animate admin-animate--1">
+        <div class="panel__body">
+          <header class="auth-heading">
+            <p class="auth-heading__eyebrow">Password reset</p>
+            <h1>找回密码</h1>
+            <p>输入管理员用户名或邮箱，系统会生成一次性重置链接。</p>
+          </header>
+
+          <?php if ($notice !== ''): ?><div class="flash flash--success" role="status"><?= h($notice) ?></div><?php endif; ?>
+          <?php if ($error !== ''): ?><div class="flash flash--error" role="alert"><?= h($error) ?></div><?php endif; ?>
+
+          <form class="form-stack" method="post" action="<?= h(url_for('forgot_password')) ?>">
+            <?= csrf_field() ?>
+            <div class="field">
+              <label for="account">用户名或邮箱</label>
+              <input id="account" name="account" type="text" value="<?= h((string)($form['account'] ?? '')) ?>" autocomplete="username" required autofocus>
+            </div>
+            <div class="action-row auth-actions">
+              <button class="button" type="submit">发送重置链接</button>
+            </div>
+            <p class="auth-link-row"><a href="<?= h(url_for('login')) ?>">返回登录</a></p>
+          </form>
+        </div>
+      </section>
+    </div>
+    <?php
+    render_layout('找回密码', (string)ob_get_clean(), [
+        'active' => 'login',
+        'description' => '找回博客后台密码',
+    ]);
+}
+
+function render_reset_password_page(string $token, string $error = ''): void
+{
+    ob_start();
+    ?>
+    <div class="auth-layout">
+      <section class="panel auth-panel admin-animate admin-animate--1">
+        <div class="panel__body">
+          <header class="auth-heading">
+            <p class="auth-heading__eyebrow">Password reset</p>
+            <h1>设置新密码</h1>
+            <p>新密码至少需要 8 个字符。</p>
+          </header>
+
+          <?php if ($error !== ''): ?><div class="flash flash--error" role="alert"><?= h($error) ?></div><?php endif; ?>
+
+          <form class="form-stack" method="post" action="<?= h(url_for('reset_password')) ?>">
+            <?= csrf_field() ?>
+            <input type="hidden" name="token" value="<?= h($token) ?>">
+            <div class="field">
+              <label for="password">新密码</label>
+              <input id="password" name="password" type="password" autocomplete="new-password" minlength="8" required autofocus>
+            </div>
+            <div class="field">
+              <label for="password_confirm">确认新密码</label>
+              <input id="password_confirm" name="password_confirm" type="password" autocomplete="new-password" minlength="8" required>
+            </div>
+            <div class="action-row auth-actions">
+              <button class="button" type="submit">更新密码</button>
+            </div>
+          </form>
+        </div>
+      </section>
+    </div>
+    <?php
+    render_layout('设置新密码', (string)ob_get_clean(), [
+        'active' => 'login',
+        'description' => '设置博客后台新密码',
     ]);
 }
 
@@ -4440,6 +4678,74 @@ switch ($action) {
         render_page_view($page);
         break;
 
+    case 'forgot_password':
+        if (is_admin()) {
+            redirect_to(url_for('admin'));
+        }
+
+        if ($_SERVER['REQUEST_METHOD'] === 'POST') {
+            verify_csrf();
+            $rate = password_reset_rate_state();
+            if ((int)$rate['count'] >= 3) {
+                render_forgot_password_page('', '重置请求过于频繁，请 15 分钟后再试。');
+            }
+            password_reset_rate_state(true);
+
+            $account = trim((string)($_POST['account'] ?? ''));
+            if ($account === '') {
+                render_forgot_password_page('', '请填写用户名或邮箱。', ['account' => $account]);
+            }
+
+            $user = one(
+                'SELECT * FROM users WHERE username = ? OR lower(email) = ? LIMIT 1',
+                [$account, str_lower_u($account)]
+            );
+
+            if ($user) {
+                [$token, $expiresAt] = create_password_reset($user);
+                send_password_reset_notice($user, $token, $expiresAt);
+            }
+
+            render_forgot_password_page('如果账号存在，重置链接已经生成。请检查管理员邮箱；若服务器未配置发信，请查看 cache 目录中的 password-reset 文件。');
+        }
+
+        render_forgot_password_page();
+        break;
+
+    case 'reset_password':
+        if (is_admin()) {
+            redirect_to(url_for('admin'));
+        }
+
+        $token = trim((string)($_POST['token'] ?? $_GET['token'] ?? ''));
+        $reset = password_reset_by_token($token);
+        if (!$reset) {
+            render_forgot_password_page('', '重置链接无效或已过期，请重新申请。');
+        }
+
+        if ($_SERVER['REQUEST_METHOD'] === 'POST') {
+            verify_csrf();
+            $password = (string)($_POST['password'] ?? '');
+            $confirm = (string)($_POST['password_confirm'] ?? '');
+
+            if (strlen($password) < 8) {
+                render_reset_password_page($token, '新密码至少需要 8 个字符。');
+            }
+            if ($password !== $confirm) {
+                render_reset_password_page($token, '两次输入的密码不一致。');
+            }
+
+            $now = time();
+            q('UPDATE users SET password_hash = ? WHERE id = ?', [password_hash($password, PASSWORD_DEFAULT), (int)$reset['user_id']]);
+            q('UPDATE password_resets SET used_at = ? WHERE id = ?', [$now, (int)$reset['id']]);
+            q('UPDATE password_resets SET used_at = ? WHERE user_id = ? AND used_at = 0', [$now, (int)$reset['user_id']]);
+            set_flash('success', '密码已更新，请使用新密码登录。');
+            redirect_to(url_for('login'));
+        }
+
+        render_reset_password_page($token);
+        break;
+
     case 'login':
         if (is_admin()) {
             redirect_to(url_for('admin'));
@@ -4481,9 +4787,7 @@ switch ($action) {
         break;
 
     case 'install_update':
-        require_admin();
-        if ($_SERVER['REQUEST_METHOD'] !== 'POST') { redirect_to(url_for('admin')); }
-        verify_csrf();
+        require_admin_post(url_for('admin'));
         try {
             $version = install_github_update(github_update_info(true));
             set_flash('success', '已更新到 ' . $version . '。如版本包含数据库变更，请继续访问 update.php。');
@@ -4526,9 +4830,7 @@ switch ($action) {
         break;
 
     case 'save_ai_settings':
-        require_admin();
-        if ($_SERVER['REQUEST_METHOD'] !== 'POST') { redirect_to(url_for('admin_ai')); }
-        verify_csrf();
+        require_admin_post(url_for('admin_ai'));
         $apiUrl = rtrim(trim((string)($_POST['ai_api_url'] ?? '')), '/');
         $apiKey = trim((string)($_POST['ai_api_key'] ?? ''));
         $model = trim((string)($_POST['ai_model'] ?? ''));
@@ -4571,11 +4873,7 @@ switch ($action) {
         break;
 
     case 'save_settings':
-        require_admin();
-        if ($_SERVER['REQUEST_METHOD'] !== 'POST') {
-            redirect_to(url_for('admin_settings'));
-        }
-        verify_csrf();
+        require_admin_post(url_for('admin_settings'));
         $siteName = trim((string)($_POST['site_name'] ?? ''));
         $postsPerPage = max(1, min(24, (int)($_POST['posts_per_page'] ?? (int)default_settings()['posts_per_page'])));
         $prettyUrl = (string)($_POST['pretty_url'] ?? '0') === '1' ? '1' : '0';
@@ -4600,9 +4898,7 @@ switch ($action) {
         break;
 
     case 'mark_comments_read':
-        require_admin();
-        if ($_SERVER['REQUEST_METHOD'] !== 'POST') { redirect_to(url_for('admin_comments')); }
-        verify_csrf();
+        require_admin_post(url_for('admin_comments'));
         $filter = trim((string)($_POST['filter'] ?? 'all'));
         $search = trim((string)($_POST['q'] ?? ''));
         $page = max(1, (int)($_POST['p'] ?? 1));
@@ -4612,19 +4908,16 @@ switch ($action) {
         break;
 
     case 'moderate_comments':
-        require_admin();
-        if ($_SERVER['REQUEST_METHOD'] !== 'POST') { redirect_to(url_for('admin_comments')); }
-        verify_csrf();
+        require_admin_post(url_for('admin_comments'));
         $filter = trim((string)($_POST['filter'] ?? 'all'));
         $search = trim((string)($_POST['q'] ?? ''));
         $page = max(1, (int)($_POST['p'] ?? 1));
         $returnUrl = admin_comments_url($filter, $search, $page);
         $action = trim((string)($_POST['action'] ?? ''));
         $ids = $_POST['comment_ids'] ?? [];
-        if (!is_array($ids)) { $ids = []; }
         $singleId = (int)($_POST['comment_id'] ?? 0);
         if ($singleId > 0) { $ids = [$singleId]; }
-        $ids = array_slice(array_values(array_unique(array_filter(array_map('intval', $ids), static fn(int $id): bool => $id > 0))), 0, 100);
+        $ids = positive_int_ids($ids);
         if (!in_array($action, ['approve', 'pending', 'spam', 'read', 'delete'], true) || $ids === []) {
             set_flash('error', $ids === [] ? '请先选择评论。' : '未知的评论操作。');
             redirect_to($returnUrl);
@@ -4653,11 +4946,7 @@ switch ($action) {
         break;
 
     case 'save_category':
-        require_admin();
-        if ($_SERVER['REQUEST_METHOD'] !== 'POST') {
-            redirect_to(url_for('admin_categories'));
-        }
-        verify_csrf();
+        require_admin_post(url_for('admin_categories'));
         $id = (int)($_POST['id'] ?? 0);
         $existing = $id > 0 ? one('SELECT * FROM categories WHERE id = ?', [$id]) : null;
         [$data, $errors] = validate_category_input($_POST, $existing);
@@ -4688,11 +4977,7 @@ switch ($action) {
         break;
 
     case 'delete_category':
-        require_admin();
-        if ($_SERVER['REQUEST_METHOD'] !== 'POST') {
-            redirect_to(url_for('admin_categories'));
-        }
-        verify_csrf();
+        require_admin_post(url_for('admin_categories'));
         $id = (int)($_POST['id'] ?? 0);
         if ($id > 0) {
             $postCount = (int)val('SELECT COUNT(*) FROM posts WHERE kind = ? AND category_id = ?', ['post', $id]);
@@ -4707,9 +4992,7 @@ switch ($action) {
         break;
 
     case 'save_link':
-        require_admin();
-        if ($_SERVER['REQUEST_METHOD'] !== 'POST') { redirect_to(url_for('admin_links')); }
-        verify_csrf();
+        require_admin_post(url_for('admin_links'));
         $id = (int)($_POST['id'] ?? 0);
         $name = trim((string)($_POST['name'] ?? ''));
         $url = trim((string)($_POST['url'] ?? ''));
@@ -4733,9 +5016,7 @@ switch ($action) {
         break;
 
     case 'save_tag':
-        require_admin();
-        if ($_SERVER['REQUEST_METHOD'] !== 'POST') { redirect_to(url_for('admin_tags')); }
-        verify_csrf();
+        require_admin_post(url_for('admin_tags'));
         $oldTag = trim((string)($_POST['old_tag'] ?? ''));
         $newTag = trim((string)($_POST['new_tag'] ?? ''));
         $tagSlug = trim((string)($_POST['tag_slug'] ?? ''));
@@ -4753,9 +5034,7 @@ switch ($action) {
         break;
 
     case 'delete_tag':
-        require_admin();
-        if ($_SERVER['REQUEST_METHOD'] !== 'POST') { redirect_to(url_for('admin_tags')); }
-        verify_csrf();
+        require_admin_post(url_for('admin_tags'));
         $selected = $_POST['tag_ids'] ?? [];
         if (!is_array($selected)) { $selected = []; }
         $selected = array_values(array_unique(array_filter(array_map(static fn($tag): string => trim((string)$tag), $selected))));
@@ -4768,18 +5047,14 @@ switch ($action) {
         break;
 
     case 'delete_link':
-        require_admin();
-        if ($_SERVER['REQUEST_METHOD'] !== 'POST') { redirect_to(url_for('admin_links')); }
-        verify_csrf();
+        require_admin_post(url_for('admin_links'));
         q('DELETE FROM links WHERE id = ?', [(int)($_POST['id'] ?? 0)]);
         set_flash('success', '链接已删除。');
         redirect_to(url_for('admin_links'));
         break;
 
     case 'save_user':
-        require_admin();
-        if ($_SERVER['REQUEST_METHOD'] !== 'POST') { redirect_to(url_for('admin_users')); }
-        verify_csrf();
+        require_admin_post(url_for('admin_users'));
         $id = (int)($_POST['id'] ?? 0);
         $username = trim((string)($_POST['username'] ?? ''));
         $password = (string)($_POST['password'] ?? '');
@@ -4812,9 +5087,7 @@ switch ($action) {
         break;
 
     case 'delete_user':
-        require_admin();
-        if ($_SERVER['REQUEST_METHOD'] !== 'POST') { redirect_to(url_for('admin_users')); }
-        verify_csrf();
+        require_admin_post(url_for('admin_users'));
         $id = (int)($_POST['id'] ?? 0);
         if ($id === (int)(current_admin()['id'] ?? 0)) { set_flash('error', '不能删除当前登录账号。'); }
         elseif ((int)val('SELECT COUNT(*) FROM users') <= 1) { set_flash('error', '系统必须保留至少一个管理员。'); }
@@ -4858,18 +5131,7 @@ switch ($action) {
                 set_flash('success', '文章已创建。');
                 redirect_to(url_for('edit', ['id' => $id]));
             }
-            render_editor_page(null, [
-                'kind' => (string)($_POST['kind'] ?? 'post'),
-                'category_id' => (string)($_POST['category_id'] ?? ''),
-                'title' => (string)($_POST['title'] ?? ''),
-                'slug' => (string)($_POST['slug'] ?? ''),
-                'tags_input' => (string)($_POST['tags_input'] ?? ''),
-                'excerpt' => (string)($_POST['excerpt'] ?? ''),
-                'content' => (string)($_POST['content'] ?? ''),
-                'status' => (string)($_POST['status'] ?? 'draft'),
-                'published_at' => (string)($_POST['published_at'] ?? ''),
-                'is_pinned' => isset($_POST['is_pinned']) ? '1' : '0',
-            ], $errors);
+            render_editor_page(null, post_form_from_request($_POST), $errors);
         }
         render_editor_page();
         break;
@@ -4905,28 +5167,13 @@ switch ($action) {
                 set_flash('success', '文章已保存。');
                 redirect_to(url_for('edit', ['id' => $id]));
             }
-            render_editor_page($post, [
-                'kind' => (string)($_POST['kind'] ?? 'post'),
-                'category_id' => (string)($_POST['category_id'] ?? ''),
-                'title' => (string)($_POST['title'] ?? ''),
-                'slug' => (string)($_POST['slug'] ?? ''),
-                'tags_input' => (string)($_POST['tags_input'] ?? ''),
-                'excerpt' => (string)($_POST['excerpt'] ?? ''),
-                'content' => (string)($_POST['content'] ?? ''),
-                'status' => (string)($_POST['status'] ?? 'draft'),
-                'published_at' => (string)($_POST['published_at'] ?? ''),
-                'is_pinned' => isset($_POST['is_pinned']) ? '1' : '0',
-            ], $errors);
+            render_editor_page($post, post_form_from_request($_POST), $errors);
         }
         render_editor_page($post);
         break;
 
     case 'change_status':
-        require_admin();
-        if ($_SERVER['REQUEST_METHOD'] !== 'POST') {
-            redirect_to(url_for('admin_posts'));
-        }
-        verify_csrf();
+        require_admin_post(url_for('admin_posts'));
         $id = (int)($_POST['id'] ?? 0);
         $status = (string)($_POST['status'] ?? 'draft');
         $post = fetch_post_by_id($id);
@@ -4944,11 +5191,7 @@ switch ($action) {
         break;
 
     case 'delete_post':
-        require_admin();
-        if ($_SERVER['REQUEST_METHOD'] !== 'POST') {
-            redirect_to(url_for('admin_posts'));
-        }
-        verify_csrf();
+        require_admin_post(url_for('admin_posts'));
         $id = (int)($_POST['id'] ?? 0);
         q('DELETE FROM posts WHERE id = ?', [$id]);
         set_flash('success', '文章已删除。');
