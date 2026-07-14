@@ -1,4 +1,4 @@
-document.addEventListener("DOMContentLoaded", () => {
+function initAccountMenus() {
   const accountMenus = Array.from(document.querySelectorAll("[data-admin-account]"));
   if (!accountMenus.length) return;
 
@@ -34,9 +34,9 @@ document.addEventListener("DOMContentLoaded", () => {
       }
     });
   });
-});
+}
 
-document.addEventListener("DOMContentLoaded", () => {
+function initSettingsControls() {
   const prettyUrl = document.getElementById("pretty_url");
   const rewriteHelp = document.querySelector("[data-rewrite-help]");
   if (prettyUrl && rewriteHelp) {
@@ -55,12 +55,11 @@ document.addEventListener("DOMContentLoaded", () => {
       });
     });
   });
+}
 
+function initAttachmentUploader() {
   const uploader = document.querySelector(".attachment-uploader");
-
-  if (!uploader) {
-    return;
-  }
+  if (!uploader) return;
 
   const input = uploader.querySelector(".attachment-input");
   const drop = uploader.querySelector(".attachment-drop");
@@ -70,9 +69,7 @@ document.addEventListener("DOMContentLoaded", () => {
   const csrf = uploader.dataset.csrf || "";
   const maxSize = 30 * 1024 * 1024;
 
-  if (!input || !drop || !list || !editor || !uploadUrl || !csrf) {
-    return;
-  }
+  if (!input || !drop || !list || !editor || !uploadUrl || !csrf) return;
 
   const appendMarkdown = (markdown) => {
     const start = editor.selectionStart ?? editor.value.length;
@@ -188,11 +185,12 @@ document.addEventListener("DOMContentLoaded", () => {
   drop.addEventListener("drop", (event) => {
     uploadFiles(event.dataTransfer?.files);
   });
-});
+}
 
-document.addEventListener("DOMContentLoaded", () => {
+function initAiEditor() {
   const root = document.querySelector("[data-ai-editor]");
   if (!root) return;
+
   const title = document.getElementById("title");
   const slug = document.getElementById("slug");
   const excerpt = document.getElementById("excerpt");
@@ -208,9 +206,19 @@ document.addEventListener("DOMContentLoaded", () => {
     data.append("type", type);
     data.append("content", source);
     data.append("instruction", extraInstruction);
-    const response = await fetch(root.dataset.url || "", { method: "POST", body: data, credentials: "same-origin" });
-    const result = await response.json().catch(() => ({ ok: false, error: "AI 服务返回了无法解析的响应。" }));
-    if (!response.ok || !result.ok) throw new Error(result.error || "AI 生成失败。");
+
+    const response = await fetch(root.dataset.url || "", {
+      method: "POST",
+      body: data,
+      credentials: "same-origin",
+    });
+    const result = await response
+      .json()
+      .catch(() => ({ ok: false, error: "AI 服务返回了无法解析的响应。" }));
+
+    if (!response.ok || !result.ok) {
+      throw new Error(result.error || "AI 生成失败。");
+    }
     return result.result || "";
   };
 
@@ -222,10 +230,12 @@ document.addEventListener("DOMContentLoaded", () => {
         instruction.focus();
         return;
       }
+
       const source = type === "slug" ? title.value.trim() : content.value.trim();
       const original = button.textContent;
       button.disabled = true;
       button.textContent = "生成中...";
+
       try {
         const result = await generate(type, source);
         if (type === "slug") slug.value = result;
@@ -239,10 +249,17 @@ document.addEventListener("DOMContentLoaded", () => {
     });
   });
 
-  root.querySelectorAll("[data-ai-close]").forEach((button) => button.addEventListener("click", () => { modal.hidden = true; status.textContent = ""; }));
+  root.querySelectorAll("[data-ai-close]").forEach((button) => {
+    button.addEventListener("click", () => {
+      modal.hidden = true;
+      status.textContent = "";
+    });
+  });
+
   confirm.addEventListener("click", async () => {
     confirm.disabled = true;
     status.textContent = "AI 正在处理正文...";
+
     try {
       content.value = await generate("polish", content.value, instruction.value.trim());
       modal.hidden = true;
@@ -254,9 +271,9 @@ document.addEventListener("DOMContentLoaded", () => {
       confirm.disabled = false;
     }
   });
-});
+}
 
-document.addEventListener("DOMContentLoaded", () => {
+function initComments() {
   document.querySelectorAll(".comments").forEach((root) => {
     const form = root.querySelector(".comment-form");
     if (!form) {
@@ -280,7 +297,9 @@ document.addEventListener("DOMContentLoaded", () => {
       parentInput.value = commentId;
       replyState.hidden = false;
       activeReplyButton = button;
-      replyButtons.forEach((item) => item.setAttribute("aria-pressed", item === button ? "true" : "false"));
+      replyButtons.forEach((item) => {
+        item.setAttribute("aria-pressed", item === button ? "true" : "false");
+      });
       cancelButton?.setAttribute("aria-label", `取消回复 @${author}`);
 
       if (focusContent) {
@@ -288,9 +307,14 @@ document.addEventListener("DOMContentLoaded", () => {
         requestAnimationFrame(() => {
           if (parentInput.value !== commentId) return;
           replyName.textContent = `@${author}`;
-          form.scrollIntoView({ behavior: window.matchMedia("(prefers-reduced-motion: reduce)").matches ? "auto" : "smooth", block: "start" });
+          form.scrollIntoView({
+            behavior: window.matchMedia("(prefers-reduced-motion: reduce)").matches ? "auto" : "smooth",
+            block: "start",
+          });
           requestAnimationFrame(() => {
-            if (parentInput.value === commentId) content.focus({ preventScroll: true });
+            if (parentInput.value === commentId) {
+              content.focus({ preventScroll: true });
+            }
           });
         });
       } else {
@@ -326,7 +350,180 @@ document.addEventListener("DOMContentLoaded", () => {
     const initialReply = replyButtons.find((button) => button.dataset.commentId === parentInput?.value);
     if (initialReply) setReply(initialReply, false);
   });
-});
+}
 
-// Terminal public interface
-document.addEventListener('DOMContentLoaded',()=>{const term=document.querySelector('.terminal'),output=document.querySelector('#output'),input=document.querySelector('#input'),shown=document.querySelector('#input-text'),ghost=document.querySelector('#ghost-text'),scan=document.querySelector('#scanlines');if(!term||!input)return;const history=[];let hi=0;const routes={home:term.dataset.home,tags:term.dataset.tags,links:term.dataset.links,archives:term.dataset.archives};const commands=['help','ls','cat','cd','pwd','clear','history','theme','crt','date','home','tags','links','archives'];const print=(text,cls='')=>{const el=document.createElement('div');el.className='line '+cls;el.textContent=text;output.append(el);output.scrollTop=output.scrollHeight};const sync=()=>{shown.textContent=input.value;const hit=commands.find(x=>x.startsWith(input.value)&&x!==input.value);ghost.textContent=input.value&&hit?hit.slice(input.value.length):''};const run=raw=>{const value=raw.trim(),[cmd,arg]=value.split(/\s+/,2);print(`visitor@devlog:~$ ${value}`,'cmd-echo');if(!value)return;if(routes[cmd]){location.href=routes[cmd];return}if(cmd==='clear'){output.innerHTML='';return}if(cmd==='pwd'){print('~','green');return}if(cmd==='date'){print(new Date().toString(),'green');return}if(cmd==='crt'){scan.classList.toggle('disabled');print(`CRT scanlines: ${scan.classList.contains('disabled')?'disabled':'enabled'}`,'dim');return}if(cmd==='history'){history.forEach((x,i)=>print(`${String(i+1).padStart(4)}  ${x}`,'dim'));return}if(cmd==='theme'){const themes={phosphor:['#7ec699','#a8e8a8'],amber:['#e8a87c','#ffb86c'],cyan:['#7aa6da','#a8d0f0']},t=themes[arg];if(t){document.documentElement.style.setProperty('--green',t[0]);document.documentElement.style.setProperty('--bright',t[1]);print(`theme: switched to ${arg}`,'green')}else print('themes: phosphor, amber, cyan','dim');return}if(cmd==='ls'){print('home/  tags/  links/  archives/  rss.xml','green');document.querySelectorAll('.posts .post a').forEach(a=>print(a.textContent+'.md','blue'));return}if(cmd==='cd'||cmd==='cat'){print(`Use: ${cmd==='cd'?'cd tags':'open an article link from ls'}`,'dim');return}if(cmd==='help'){print('COMMANDS','amber');print('  ls                         list posts and sections');print('  home|tags|links|archives   navigate site');print('  clear|history|pwd          shell utilities');print('  theme <name>               phosphor, amber, cyan');print('  crt|date                    display controls');return}print(`${cmd}: command not found. Type "help".`,'red')};input.addEventListener('input',sync);input.addEventListener('keydown',e=>{if(e.key==='Enter'){e.preventDefault();if(input.value.trim()){history.push(input.value.trim());hi=history.length}run(input.value);input.value='';sync()}else if(e.key==='Tab'&&ghost.textContent){e.preventDefault();input.value+=ghost.textContent;sync()}else if(e.key==='ArrowUp'){e.preventDefault();if(hi>0)input.value=history[--hi]||'';sync()}else if(e.key==='ArrowDown'){e.preventDefault();input.value=hi<history.length-1?history[++hi]:(hi=history.length,'');sync()}else if(e.ctrlKey&&e.key.toLowerCase()==='l'){e.preventDefault();output.innerHTML=''}});document.addEventListener('click',()=>input.focus());const size=()=>{const i=document.querySelector('#term-info');if(i)i.textContent=`${Math.floor(output.clientWidth/8)}×${Math.floor(output.clientHeight/16)}`};addEventListener('resize',size);size();setTimeout(()=>document.querySelector('#turn-on')?.remove(),800);input.focus()});
+function initTerminal() {
+  const term = document.querySelector(".terminal");
+  const output = document.querySelector("#output");
+  const input = document.querySelector("#input");
+  const shown = document.querySelector("#input-text");
+  const ghost = document.querySelector("#ghost-text");
+  const scan = document.querySelector("#scanlines");
+  if (!term || !output || !input || !shown || !ghost || !scan) return;
+
+  const history = [];
+  let historyIndex = 0;
+  const routes = {
+    home: term.dataset.home,
+    tags: term.dataset.tags,
+    links: term.dataset.links,
+    archives: term.dataset.archives,
+  };
+  const commands = [
+    "help",
+    "ls",
+    "cat",
+    "cd",
+    "pwd",
+    "clear",
+    "history",
+    "theme",
+    "crt",
+    "date",
+    "home",
+    "tags",
+    "links",
+    "archives",
+  ];
+
+  const print = (text, className = "") => {
+    const line = document.createElement("div");
+    line.className = `line ${className}`;
+    line.textContent = text;
+    output.append(line);
+    output.scrollTop = output.scrollHeight;
+  };
+
+  const syncInput = () => {
+    shown.textContent = input.value;
+    const hit = commands.find((command) => command.startsWith(input.value) && command !== input.value);
+    ghost.textContent = input.value && hit ? hit.slice(input.value.length) : "";
+  };
+
+  const switchTheme = (name) => {
+    const themes = {
+      phosphor: ["#7ec699", "#a8e8a8"],
+      amber: ["#e8a87c", "#ffb86c"],
+      cyan: ["#7aa6da", "#a8d0f0"],
+    };
+    const theme = themes[name];
+    if (!theme) {
+      print("themes: phosphor, amber, cyan", "dim");
+      return;
+    }
+
+    document.documentElement.style.setProperty("--green", theme[0]);
+    document.documentElement.style.setProperty("--bright", theme[1]);
+    print(`theme: switched to ${name}`, "green");
+  };
+
+  const runCommand = (raw) => {
+    const value = raw.trim();
+    const [command, argument] = value.split(/\s+/, 2);
+    print(`visitor@devlog:~$ ${value}`, "cmd-echo");
+
+    if (!value) return;
+    if (routes[command]) {
+      location.href = routes[command];
+      return;
+    }
+    if (command === "clear") {
+      output.innerHTML = "";
+      return;
+    }
+    if (command === "pwd") {
+      print("~", "green");
+      return;
+    }
+    if (command === "date") {
+      print(new Date().toString(), "green");
+      return;
+    }
+    if (command === "crt") {
+      scan.classList.toggle("disabled");
+      print(`CRT scanlines: ${scan.classList.contains("disabled") ? "disabled" : "enabled"}`, "dim");
+      return;
+    }
+    if (command === "history") {
+      history.forEach((item, index) => print(`${String(index + 1).padStart(4)}  ${item}`, "dim"));
+      return;
+    }
+    if (command === "theme") {
+      switchTheme(argument);
+      return;
+    }
+    if (command === "ls") {
+      print("home/  tags/  links/  archives/  rss.xml", "green");
+      document.querySelectorAll(".posts .post a").forEach((link) => print(`${link.textContent}.md`, "blue"));
+      return;
+    }
+    if (command === "cd" || command === "cat") {
+      print(`Use: ${command === "cd" ? "cd tags" : "open an article link from ls"}`, "dim");
+      return;
+    }
+    if (command === "help") {
+      print("COMMANDS", "amber");
+      print("  ls                         list posts and sections");
+      print("  home|tags|links|archives   navigate site");
+      print("  clear|history|pwd          shell utilities");
+      print("  theme <name>               phosphor, amber, cyan");
+      print("  crt|date                    display controls");
+      return;
+    }
+
+    print(`${command}: command not found. Type "help".`, "red");
+  };
+
+  input.addEventListener("input", syncInput);
+  input.addEventListener("keydown", (event) => {
+    if (event.key === "Enter") {
+      event.preventDefault();
+      if (input.value.trim()) {
+        history.push(input.value.trim());
+        historyIndex = history.length;
+      }
+      runCommand(input.value);
+      input.value = "";
+      syncInput();
+    } else if (event.key === "Tab" && ghost.textContent) {
+      event.preventDefault();
+      input.value += ghost.textContent;
+      syncInput();
+    } else if (event.key === "ArrowUp") {
+      event.preventDefault();
+      if (historyIndex > 0) input.value = history[--historyIndex] || "";
+      syncInput();
+    } else if (event.key === "ArrowDown") {
+      event.preventDefault();
+      input.value =
+        historyIndex < history.length - 1 ? history[++historyIndex] : ((historyIndex = history.length), "");
+      syncInput();
+    } else if (event.ctrlKey && event.key.toLowerCase() === "l") {
+      event.preventDefault();
+      output.innerHTML = "";
+    }
+  });
+
+  document.addEventListener("click", () => input.focus());
+
+  const updateSize = () => {
+    const info = document.querySelector("#term-info");
+    if (info) {
+      info.textContent = `${Math.floor(output.clientWidth / 8)}×${Math.floor(output.clientHeight / 16)}`;
+    }
+  };
+
+  addEventListener("resize", updateSize);
+  updateSize();
+  setTimeout(() => document.querySelector("#turn-on")?.remove(), 800);
+  input.focus();
+}
+
+document.addEventListener("DOMContentLoaded", () => {
+  initAccountMenus();
+  initSettingsControls();
+  initAttachmentUploader();
+  initAiEditor();
+  initComments();
+  initTerminal();
+});
