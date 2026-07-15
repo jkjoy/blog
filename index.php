@@ -121,7 +121,7 @@ function table_columns(PDO $pdo, string $table): array
 function ensure_comment_columns(PDO $pdo): void
 {
     $columns = table_columns($pdo, 'comments');
-    if (isset($columns['parent_id'], $columns['reply_to_name'], $columns['user_id'])) {
+    if (isset($columns['parent_id'], $columns['reply_to_name'], $columns['user_id'], $columns['ip_address'], $columns['reply_notified_at'])) {
         return;
     }
 
@@ -135,6 +135,8 @@ function ensure_comment_columns(PDO $pdo): void
         if (!isset($columns['parent_id'])) { $pdo->exec('ALTER TABLE comments ADD COLUMN parent_id INTEGER REFERENCES comments(id) ON DELETE SET NULL'); }
         if (!isset($columns['reply_to_name'])) { $pdo->exec("ALTER TABLE comments ADD COLUMN reply_to_name TEXT NOT NULL DEFAULT ''"); }
         if (!isset($columns['user_id'])) { $pdo->exec('ALTER TABLE comments ADD COLUMN user_id INTEGER REFERENCES users(id) ON DELETE SET NULL'); }
+        if (!isset($columns['ip_address'])) { $pdo->exec("ALTER TABLE comments ADD COLUMN ip_address TEXT NOT NULL DEFAULT ''"); }
+        if (!isset($columns['reply_notified_at'])) { $pdo->exec('ALTER TABLE comments ADD COLUMN reply_notified_at INTEGER NOT NULL DEFAULT 0'); }
         if ($ownsTransaction) {
             $pdo->commit();
         }
@@ -260,13 +262,24 @@ function ensure_schema(PDO $pdo): void
             status TEXT NOT NULL DEFAULT 'pending',
             is_read INTEGER NOT NULL DEFAULT 0,
             ip_hash TEXT NOT NULL DEFAULT '',
+            ip_address TEXT NOT NULL DEFAULT '',
             user_agent TEXT NOT NULL DEFAULT '',
+            reply_notified_at INTEGER NOT NULL DEFAULT 0,
             created_at INTEGER NOT NULL,
             updated_at INTEGER NOT NULL,
             FOREIGN KEY(post_id) REFERENCES posts(id) ON DELETE CASCADE,
             FOREIGN KEY(user_id) REFERENCES users(id) ON DELETE SET NULL,
             FOREIGN KEY(parent_id) REFERENCES comments(id) ON DELETE SET NULL
         )"
+    );
+    $pdo->exec(
+        "CREATE TABLE IF NOT EXISTS post_views(
+            post_id INTEGER NOT NULL,
+            ip_hash TEXT NOT NULL,
+            created_at INTEGER NOT NULL,
+            PRIMARY KEY(post_id, ip_hash),
+            FOREIGN KEY(post_id) REFERENCES posts(id) ON DELETE CASCADE
+        ) WITHOUT ROWID"
     );
 
     $columns = table_columns($pdo, 'posts');
@@ -1278,22 +1291,6 @@ function content_permalink(array $row): string
         : url_for('post', ['slug' => (string)$row['slug']]);
 }
 
-function content_public_path(array $row): string
-{
-    $url = content_permalink($row);
-    $parts = parse_url($url);
-    if (!is_array($parts)) {
-        return $url;
-    }
-
-    $path = (string)($parts['path'] ?? '');
-    if (isset($parts['query']) && $parts['query'] !== '') {
-        $path .= '?' . $parts['query'];
-    }
-
-    return $path !== '' ? $path : $url;
-}
-
 function parse_tags_input(string $raw): array
 {
     $parts = preg_split('/[\n,，]+/u', $raw);
@@ -1799,7 +1796,23 @@ function increment_content_views(array $post): void
         return;
     }
 
-    q('UPDATE posts SET views = views + 1 WHERE id = ?', [(int)$post['id']]);
+    $database = db();
+    $database->exec('BEGIN IMMEDIATE');
+    try {
+        $inserted = q(
+            'INSERT OR IGNORE INTO post_views(post_id, ip_hash, created_at) VALUES(?,?,?)',
+            [(int)$post['id'], client_ip_hash(), time()]
+        )->rowCount();
+        if ($inserted === 1) {
+            q('UPDATE posts SET views = views + 1 WHERE id = ?', [(int)$post['id']]);
+        }
+        $database->commit();
+    } catch (Throwable $exception) {
+        if ($database->inTransaction()) {
+            $database->rollBack();
+        }
+        throw $exception;
+    }
 }
 
 function fetch_categories(): array
@@ -1817,20 +1830,6 @@ function fetch_categories(): array
 function category_options(): array
 {
     return all_rows('SELECT id, name FROM categories ORDER BY sort_order ASC, id DESC');
-}
-
-function category_name(?int $id): string
-{
-    if (!$id) {
-        return '未分类';
-    }
-
-    return (string)(val('SELECT name FROM categories WHERE id = ?', [$id]) ?: '未分类');
-}
-
-function category_by_id(?int $id): ?array
-{
-    return $id ? one('SELECT * FROM categories WHERE id = ?', [$id]) : null;
 }
 
 function unique_category_slug(string $seed, ?int $excludeId = null): string
@@ -1909,17 +1908,6 @@ function public_quote(): string
     $quote = trim(setting('site_tagline'));
 
     return $quote !== '' ? $quote : setting('site_name', default_settings()['site_name']);
-}
-
-function public_icon(string $name): string
-{
-    return match ($name) {
-        'pen' => '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3 17.25V21h3.75L17.81 9.94l-3.75-3.75L3 17.25Zm14.71-9.04a1.003 1.003 0 0 0 0-1.42l-2.5-2.5a1.003 1.003 0 0 0-1.42 0l-1.46 1.46 3.75 3.75 1.63-1.29Z" fill="currentColor"/></svg>',
-        'tag' => '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="m21 12-9 9-9-9 9-9 9 9Zm-12.59 0L12 15.59 15.59 12 12 8.41 8.41 12ZM12 10.5a1.5 1.5 0 1 0 0 3 1.5 1.5 0 0 0 0-3Z" fill="currentColor"/></svg>',
-        'rss' => '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6 18a2 2 0 1 0 0-4 2 2 0 0 0 0 4Zm-2-8v3a7 7 0 0 1 7 7h3c0-5.52-4.48-10-10-10Zm0-5v3c6.63 0 12 5.37 12 12h3C19 11.16 12.84 5 5 5H4Z" fill="currentColor"/></svg>',
-        'arrow-up' => '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 5.5 5.5 12l1.41 1.41L11 9.33V20h2V9.33l4.09 4.08L18.5 12 12 5.5Z" fill="currentColor"/></svg>',
-        default => '',
-    };
 }
 
 function render_public_post_list(array $posts): string
@@ -2102,9 +2090,9 @@ function fetch_admin_comments(string $filter, string $search, int $page, int $pe
     }
 
     if ($search !== '') {
-        $where[] = '(c.author_name LIKE ? OR c.author_email LIKE ? OR c.reply_to_name LIKE ? OR c.content LIKE ? OR p.title LIKE ?)';
+        $where[] = '(c.author_name LIKE ? OR c.author_email LIKE ? OR c.ip_address LIKE ? OR c.reply_to_name LIKE ? OR c.content LIKE ? OR p.title LIKE ?)';
         $term = '%' . $search . '%';
-        array_push($params, $term, $term, $term, $term, $term);
+        array_push($params, $term, $term, $term, $term, $term, $term);
     }
 
     $whereSql = $where ? ' WHERE ' . implode(' AND ', $where) : '';
@@ -2195,10 +2183,94 @@ function pull_comment_notice(int $postId): ?array
     return is_array($notice) ? $notice : null;
 }
 
-function comment_ip_hash(): string
+function client_ip_hash(): string
 {
-    $address = (string)($_SERVER['REMOTE_ADDR'] ?? 'unknown');
+    $address = client_ip_address();
     return hash_hmac('sha256', $address, DB_FILE !== '' ? DB_FILE : __FILE__);
+}
+
+function client_ip_address(): string
+{
+    $address = trim((string)($_SERVER['REMOTE_ADDR'] ?? ''));
+    return filter_var($address, FILTER_VALIDATE_IP) ? $address : '';
+}
+
+function send_site_mail(string $recipient, string $subject, string $body): bool
+{
+    $recipient = trim($recipient);
+    if (!filter_var($recipient, FILTER_VALIDATE_EMAIL)) {
+        return false;
+    }
+
+    if (smtp_send_mail($recipient, $subject, $body)) {
+        return true;
+    }
+    if (!function_exists('mail')) {
+        return false;
+    }
+
+    $siteName = setting('site_name', default_settings()['site_name']);
+    $host = (string)(parse_url(site_root_url(), PHP_URL_HOST) ?: 'localhost');
+    if (!preg_match('/^[a-z0-9.-]+$/i', $host)) {
+        $host = 'localhost';
+    }
+    $headers = [
+        'Content-Type: text/plain; charset=UTF-8',
+        'From: =?UTF-8?B?' . base64_encode($siteName) . '?= <no-reply@' . $host . '>',
+    ];
+
+    return @mail(
+        $recipient,
+        '=?UTF-8?B?' . base64_encode(str_replace(["\r", "\n"], '', $subject)) . '?=',
+        $body,
+        implode("\r\n", $headers)
+    );
+}
+
+function send_comment_reply_notice(int $commentId): void
+{
+    $reply = one(
+        "SELECT c.id, c.author_name, c.author_email, c.content, c.reply_notified_at,
+                parent.author_name AS recipient_name, parent.author_email AS recipient_email,
+                p.kind AS post_kind, p.slug AS post_slug, p.title AS post_title
+         FROM comments c
+         INNER JOIN comments parent ON parent.id = c.parent_id
+         INNER JOIN posts p ON p.id = c.post_id
+         WHERE c.id = ? AND c.status = 'approved'",
+        [$commentId]
+    );
+    if (!$reply || (int)$reply['reply_notified_at'] > 0) {
+        return;
+    }
+
+    $recipient = str_lower_u(trim((string)$reply['recipient_email']));
+    $authorEmail = str_lower_u(trim((string)$reply['author_email']));
+    if (!filter_var($recipient, FILTER_VALIDATE_EMAIL) || ($authorEmail !== '' && $recipient === $authorEmail)) {
+        q('UPDATE comments SET reply_notified_at = ? WHERE id = ? AND reply_notified_at = 0', [time(), $commentId]);
+        return;
+    }
+
+    $siteName = setting('site_name', default_settings()['site_name']);
+    $url = absolute_url(content_permalink(['kind' => (string)$reply['post_kind'], 'slug' => (string)$reply['post_slug']])) . '#comment-' . $commentId;
+    $subject = '[' . $siteName . '] ' . (string)$reply['author_name'] . ' 回复了你的评论';
+    $body = (string)$reply['recipient_name'] . "，你好：\n\n"
+        . (string)$reply['author_name'] . ' 在《' . (string)$reply['post_title'] . "》中回复了你：\n\n"
+        . (string)$reply['content'] . "\n\n查看回复：" . $url;
+
+    if (send_site_mail($recipient, $subject, $body)) {
+        q('UPDATE comments SET reply_notified_at = ? WHERE id = ? AND reply_notified_at = 0', [time(), $commentId]);
+    }
+}
+
+function send_approved_reply_notices(array $commentIds): void
+{
+    foreach ($commentIds as $commentId) {
+        try {
+            send_comment_reply_notice((int)$commentId);
+        } catch (Throwable $exception) {
+            error_log('Reply notification failed: ' . $exception->getMessage());
+        }
+    }
 }
 
 function comment_rate_file(): string
@@ -2566,6 +2638,37 @@ function validate_post_input(array $input, ?array $existing = null): array
         'published_at' => $publishedAt,
         'is_pinned' => $kind === 'post' ? $isPinned : 0,
     ], $errors];
+}
+
+function save_post(array $data, ?int $id = null): int
+{
+    $values = [
+        $data['kind'],
+        $data['category_id'],
+        $data['slug'],
+        $data['title'],
+        $data['tags'],
+        $data['excerpt'],
+        $data['content'],
+        $data['status'],
+        $data['published_at'],
+        $data['is_pinned'],
+    ];
+    $now = time();
+
+    if ($id !== null) {
+        q(
+            'UPDATE posts SET kind = ?, category_id = ?, slug = ?, title = ?, tags = ?, excerpt = ?, content = ?, status = ?, published_at = ?, is_pinned = ?, updated_at = ? WHERE id = ?',
+            array_merge($values, [$now, $id])
+        );
+        return $id;
+    }
+
+    q(
+        'INSERT INTO posts(author_id, kind, category_id, slug, title, tags, excerpt, content, status, published_at, is_pinned, created_at, updated_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)',
+        array_merge([(int)(current_admin()['id'] ?? 0)], $values, [$now, $now])
+    );
+    return (int)db()->lastInsertId();
 }
 
 function post_form_from_request(array $input): array
@@ -3221,11 +3324,18 @@ function render_post_page(array $post, array $commentForm = [], array $commentEr
 
     $neighbors = post_neighbors($post);
     $state = post_state($post);
-    $authorProfile = one('SELECT username, nickname FROM users WHERE id = ?', [(int)($post['author_id'] ?? 0)]);
-    $author = trim((string)($authorProfile['nickname'] ?? '')) ?: (string)($authorProfile['username'] ?? 'Admin');
-    $category = category_by_id(isset($post['category_id']) ? (int)$post['category_id'] : null);
-    $categoryName = (string)($category['name'] ?? category_name(null));
-    $viewCount = (int)val('SELECT views FROM posts WHERE id = ?', [(int)$post['id']]);
+    $meta = one(
+        'SELECT p.views, u.username, u.nickname, c.name AS category_name, c.slug AS category_slug
+         FROM posts p
+         LEFT JOIN users u ON u.id = p.author_id
+         LEFT JOIN categories c ON c.id = p.category_id
+         WHERE p.id = ?',
+        [(int)$post['id']]
+    ) ?? [];
+    $author = trim((string)($meta['nickname'] ?? '')) ?: (string)($meta['username'] ?? 'Admin');
+    $categoryName = (string)($meta['category_name'] ?? '未分类');
+    $categorySlug = (string)($meta['category_slug'] ?? '');
+    $viewCount = (int)($meta['views'] ?? $post['views'] ?? 0);
     $displayTime = (int)($post['published_at'] ?: $post['updated_at'] ?: $post['created_at']);
     $tagsMarkup = render_tag_chips($post);
 
@@ -3236,7 +3346,7 @@ function render_post_page(array $post, array $commentForm = [], array $commentEr
       <div class="meta">
         <span><?= h(date('F j, Y', $displayTime)) ?></span>
         <span>作者: <?= h($author) ?></span>
-        <span>分类: <?php if ($category): ?><a href="<?= h(url_for('category', ['slug' => (string)$category['slug']])) ?>"><?= h($categoryName) ?></a><?php else: ?><?= h($categoryName) ?><?php endif; ?></span>
+        <span>分类: <?php if ($categorySlug !== ''): ?><a href="<?= h(url_for('category', ['slug' => $categorySlug])) ?>"><?= h($categoryName) ?></a><?php else: ?><?= h($categoryName) ?><?php endif; ?></span>
         <span>浏览: <?= h((string)$viewCount) ?></span>
         <?php if (!is_live_post($post) && is_admin()): ?>
           <span><?= h($state['label']) ?>预览</span>
@@ -3608,20 +3718,8 @@ function send_password_reset_notice(array $user, string $token, int $expiresAt):
     $siteName = setting('site_name', default_settings()['site_name']);
     $subject = '重置 ' . $siteName . ' 管理员密码';
     $body = "你正在重置 {$siteName} 的管理员密码。\n\n重置链接：{$link}\n\n链接将在 " . date('Y-m-d H:i:s', $expiresAt) . " 过期。如果不是你本人操作，请忽略这封邮件。";
-    $sent = false;
     $email = trim((string)($user['email'] ?? ''));
-
-    if ($email !== '' && filter_var($email, FILTER_VALIDATE_EMAIL)) {
-        $sent = smtp_send_mail($email, $subject, $body);
-    }
-
-    if (!$sent && $email !== '' && filter_var($email, FILTER_VALIDATE_EMAIL) && function_exists('mail')) {
-        $headers = [
-            'Content-Type: text/plain; charset=UTF-8',
-            'From: ' . preg_replace('/[\r\n]+/', '', $siteName) . ' <no-reply@' . parse_url(site_root_url(), PHP_URL_HOST) . '>',
-        ];
-        $sent = @mail($email, '=?UTF-8?B?' . base64_encode($subject) . '?=', $body, implode("\r\n", $headers));
-    }
+    $sent = send_site_mail($email, $subject, $body);
 
     file_put_contents(password_reset_notice_path($token), $body . "\n", LOCK_EX);
     return $sent;
@@ -3648,9 +3746,9 @@ function send_comment_notification(array $post, array $comment, string $status):
 
     $siteName = setting('site_name', default_settings()['site_name']);
     $subject = '新评论：' . (string)$post['title'];
-    $body = "站点：{$siteName}\n文章：" . (string)$post['title'] . "\n状态：" . ($status === 'approved' ? '已发布' : '待审核') . "\n评论人：" . (string)$comment['author_name'] . "\n邮箱：" . (string)$comment['author_email'] . "\n链接：" . absolute_url(content_permalink($post)) . "#comments\n\n评论内容：\n" . (string)$comment['content'];
+    $body = "站点：{$siteName}\n文章：" . (string)$post['title'] . "\n状态：" . ($status === 'approved' ? '已发布' : '待审核') . "\n评论人：" . (string)$comment['author_name'] . "\n邮箱：" . (string)$comment['author_email'] . "\nIP：" . (client_ip_address() ?: '未知') . "\n链接：" . absolute_url(content_permalink($post)) . "#comments\n\n评论内容：\n" . (string)$comment['content'];
 
-    return smtp_send_mail($email, $subject, $body);
+    return send_site_mail($email, $subject, $body);
 }
 
 function password_reset_by_token(string $token): ?array
@@ -4119,6 +4217,7 @@ function render_admin_comments_page(): void
                           <div class="table-title">
                             <strong><?= h((string)$comment['author_name']) ?></strong>
                             <span><?= h((string)$comment['author_email']) ?></span>
+                            <?php if ((string)$comment['ip_address'] !== ''): ?><span>IP: <?= h((string)$comment['ip_address']) ?></span><?php endif; ?>
                             <?php if ($authorUrl !== '#'): ?><a href="<?= h($authorUrl) ?>" target="_blank" rel="noopener noreferrer nofollow"><?= h((string)parse_url($authorUrl, PHP_URL_HOST)) ?></a><?php endif; ?>
                           </div>
                         </td>
@@ -4879,7 +4978,8 @@ switch ($action) {
             $comment['content'],
             $status,
             $isRead,
-            comment_ip_hash(),
+            client_ip_hash(),
+            client_ip_address(),
             str_sub_u((string)($_SERVER['HTTP_USER_AGENT'] ?? ''), 0, 255),
             $now,
             $now,
@@ -4888,6 +4988,7 @@ switch ($action) {
         $duplicateCutoff = time() - 86400;
         $duplicateIdentitySql = $userId > 0 ? 'duplicate.user_id = ?' : 'duplicate.user_id IS NULL AND duplicate.author_email = ?';
         $duplicateIdentityValue = $userId > 0 ? $userId : $comment['author_email'];
+        $commentId = 0;
         try {
             $database->exec('BEGIN IMMEDIATE');
             $duplicateError = duplicate_comment_error($postId, $parentId, $userId, $comment['author_email'], $comment['content']);
@@ -4899,8 +5000,8 @@ switch ($action) {
 
             if ($parentId > 0) {
                 $inserted = q(
-                    "INSERT INTO comments(post_id, user_id, parent_id, reply_to_name, author_name, author_email, author_url, content, status, is_read, ip_hash, user_agent, created_at, updated_at)
-                     SELECT ?, ?, parent.id, parent.author_name, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?
+                    "INSERT INTO comments(post_id, user_id, parent_id, reply_to_name, author_name, author_email, author_url, content, status, is_read, ip_hash, ip_address, user_agent, created_at, updated_at)
+                     SELECT ?, ?, parent.id, parent.author_name, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?
                      FROM comments parent
                      WHERE parent.id = ? AND parent.post_id = ? AND parent.status = 'approved'
                        AND NOT EXISTS (
@@ -4922,10 +5023,11 @@ switch ($action) {
                     set_comment_feedback($postId, $comment, [$failureMessage]);
                     redirect_to($returnUrl);
                 }
+                $commentId = (int)$database->lastInsertId();
             } else {
                 $inserted = q(
-                    "INSERT INTO comments(post_id, user_id, parent_id, reply_to_name, author_name, author_email, author_url, content, status, is_read, ip_hash, user_agent, created_at, updated_at)
-                     SELECT ?, ?, NULL, '', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?
+                    "INSERT INTO comments(post_id, user_id, parent_id, reply_to_name, author_name, author_email, author_url, content, status, is_read, ip_hash, ip_address, user_agent, created_at, updated_at)
+                     SELECT ?, ?, NULL, '', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?
                      WHERE NOT EXISTS (
                          SELECT 1 FROM comments duplicate
                          WHERE duplicate.post_id = ? AND COALESCE(duplicate.parent_id, 0) = 0
@@ -4938,6 +5040,7 @@ switch ($action) {
                     set_comment_feedback($postId, $comment, ['这条评论已经提交过了。']);
                     redirect_to($returnUrl);
                 }
+                $commentId = (int)$database->lastInsertId();
             }
             $database->commit();
             if ($isRead === 0) {
@@ -4951,6 +5054,13 @@ switch ($action) {
                 $database->rollBack();
             }
             throw $exception;
+        }
+        if ($status === 'approved' && $parentId > 0) {
+            try {
+                send_comment_reply_notice($commentId);
+            } catch (Throwable $exception) {
+                error_log('Reply notification failed: ' . $exception->getMessage());
+            }
         }
         if ($authenticatedIdentity === null) {
             $_SESSION['comment_identity'] = [
@@ -5280,6 +5390,9 @@ switch ($action) {
             $status = ['approve' => 'approved', 'pending' => 'pending', 'spam' => 'spam'][$action];
             $params = array_merge([$status, time()], $ids);
             $affected = q("UPDATE comments SET status = ?, is_read = 1, updated_at = ? WHERE id IN ({$placeholders})", $params)->rowCount();
+            if ($status === 'approved') {
+                send_approved_reply_notices($ids);
+            }
             $message = match ($status) {
                 'approved' => '已通过 ' . $affected . ' 条评论。',
                 'spam' => '已将 ' . $affected . ' 条评论标记为垃圾。',
@@ -5453,26 +5566,7 @@ switch ($action) {
             verify_csrf();
             [$data, $errors] = validate_post_input($_POST);
             if (!$errors) {
-                $now = time();
-                q(
-                    'INSERT INTO posts(author_id, kind, category_id, slug, title, tags, excerpt, content, status, published_at, is_pinned, created_at, updated_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)',
-                    [
-                        (int)(current_admin()['id'] ?? 0),
-                        $data['kind'],
-                        $data['category_id'],
-                        $data['slug'],
-                        $data['title'],
-                        $data['tags'],
-                        $data['excerpt'],
-                        $data['content'],
-                        $data['status'],
-                        $data['published_at'],
-                        $data['is_pinned'],
-                        $now,
-                        $now,
-                    ]
-                );
-                $id = (int)db()->lastInsertId();
+                $id = save_post($data);
                 set_flash('success', '文章已创建。');
                 redirect_to(url_for('edit', ['id' => $id]));
             }
@@ -5492,23 +5586,7 @@ switch ($action) {
             verify_csrf();
             [$data, $errors] = validate_post_input($_POST, $post);
             if (!$errors) {
-                q(
-                    'UPDATE posts SET kind = ?, category_id = ?, slug = ?, title = ?, tags = ?, excerpt = ?, content = ?, status = ?, published_at = ?, is_pinned = ?, updated_at = ? WHERE id = ?',
-                    [
-                        $data['kind'],
-                        $data['category_id'],
-                        $data['slug'],
-                        $data['title'],
-                        $data['tags'],
-                        $data['excerpt'],
-                        $data['content'],
-                        $data['status'],
-                        $data['published_at'],
-                        $data['is_pinned'],
-                        time(),
-                        $id,
-                    ]
-                );
+                save_post($data, $id);
                 set_flash('success', '文章已保存。');
                 redirect_to(url_for('edit', ['id' => $id]));
             }

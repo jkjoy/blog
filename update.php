@@ -161,7 +161,9 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                     status TEXT NOT NULL DEFAULT 'pending',
                     is_read INTEGER NOT NULL DEFAULT 0,
                     ip_hash TEXT NOT NULL DEFAULT '',
+                    ip_address TEXT NOT NULL DEFAULT '',
                     user_agent TEXT NOT NULL DEFAULT '',
+                    reply_notified_at INTEGER NOT NULL DEFAULT 0,
                     created_at INTEGER NOT NULL,
                     updated_at INTEGER NOT NULL,
                     FOREIGN KEY(post_id) REFERENCES posts(id) ON DELETE CASCADE,
@@ -169,6 +171,19 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                     FOREIGN KEY(parent_id) REFERENCES comments(id) ON DELETE SET NULL
                 )"
             );
+            $viewsExist = (bool)$db->query("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'post_views' LIMIT 1")->fetchColumn();
+            $db->exec(
+                "CREATE TABLE IF NOT EXISTS post_views(
+                    post_id INTEGER NOT NULL,
+                    ip_hash TEXT NOT NULL,
+                    created_at INTEGER NOT NULL,
+                    PRIMARY KEY(post_id, ip_hash),
+                    FOREIGN KEY(post_id) REFERENCES posts(id) ON DELETE CASCADE
+                ) WITHOUT ROWID"
+            );
+            if (!$viewsExist) {
+                $changes[] = '新增文章独立访客计数表';
+            }
             $replyFieldsAdded = false;
             if (!update_has_column($db, 'comments', 'parent_id')) {
                 $db->exec('ALTER TABLE comments ADD COLUMN parent_id INTEGER REFERENCES comments(id) ON DELETE SET NULL');
@@ -182,6 +197,14 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             if (!update_has_column($db, 'comments', 'user_id')) {
                 $db->exec('ALTER TABLE comments ADD COLUMN user_id INTEGER REFERENCES users(id) ON DELETE SET NULL');
                 $userFieldAdded = true;
+            }
+            if (!update_has_column($db, 'comments', 'ip_address')) {
+                $db->exec("ALTER TABLE comments ADD COLUMN ip_address TEXT NOT NULL DEFAULT ''");
+                $changes[] = '新增评论 IP 地址字段';
+            }
+            if (!update_has_column($db, 'comments', 'reply_notified_at')) {
+                $db->exec('ALTER TABLE comments ADD COLUMN reply_notified_at INTEGER NOT NULL DEFAULT 0');
+                $changes[] = '新增评论回复通知状态';
             }
             $emailApprovalIndexExists = (bool)$db->query("SELECT 1 FROM sqlite_master WHERE type = 'index' AND name = 'idx_comments_visitor_email_approval' LIMIT 1")->fetchColumn();
             $db->exec('CREATE INDEX IF NOT EXISTS idx_comments_post_public ON comments(post_id, status, created_at, id)');

@@ -594,13 +594,24 @@ $db->exec(
         status TEXT NOT NULL DEFAULT \'pending\',
         is_read INTEGER NOT NULL DEFAULT 0,
         ip_hash TEXT NOT NULL DEFAULT \'\',
+        ip_address TEXT NOT NULL DEFAULT \'\',
         user_agent TEXT NOT NULL DEFAULT \'\',
+        reply_notified_at INTEGER NOT NULL DEFAULT 0,
         created_at INTEGER NOT NULL,
         updated_at INTEGER NOT NULL,
         FOREIGN KEY(post_id) REFERENCES posts(id) ON DELETE CASCADE,
         FOREIGN KEY(user_id) REFERENCES users(id) ON DELETE SET NULL,
         FOREIGN KEY(parent_id) REFERENCES comments(id) ON DELETE SET NULL
     )'
+);
+$db->exec(
+    'CREATE TABLE IF NOT EXISTS post_views(
+        post_id INTEGER NOT NULL,
+        ip_hash TEXT NOT NULL,
+        created_at INTEGER NOT NULL,
+        PRIMARY KEY(post_id, ip_hash),
+        FOREIGN KEY(post_id) REFERENCES posts(id) ON DELETE CASCADE
+    ) WITHOUT ROWID'
 );
 $db->exec('CREATE INDEX IF NOT EXISTS idx_posts_published_pinned ON posts(kind, status, is_pinned DESC, published_at DESC, id DESC)');
 $db->exec('CREATE INDEX IF NOT EXISTS idx_posts_category ON posts(category_id, kind, status, published_at DESC)');
