@@ -21,12 +21,6 @@ function i_default_settings(): array
         'site_tagline' => 'A small PHP blog running on one main entry file.',
         'site_description' => 'A simple PHP + SQLite blog inspired by Hugo Paper.',
         'site_keywords' => '',
-        'ai_api_url' => 'https://api.deepseek.com',
-        'ai_api_key' => '',
-        'ai_model' => 'deepseek-v4-flash',
-        'ai_slug_prompt' => 'Translate the title into a concise English URL slug. Output lowercase ASCII words separated only by hyphens. Output the slug only, without quotes or explanation.',
-        'ai_summary_prompt' => '根据文章内容生成不超过100个汉字的中文摘要。只输出摘要正文，不要标题、引号、解释或 Markdown 标记。',
-        'ai_polish_prompt' => '你是专业中文编辑。严格执行用户要求，保留有效 Markdown 结构。只输出处理后的完整正文，不要解释处理过程。',
         'site_footer' => '',
         'custom_head_code' => '',
         'favicon_url' => 'logo.png',
@@ -36,6 +30,33 @@ function i_default_settings(): array
         'comments_notify' => '1',
         'posts_per_page' => '6',
         'pretty_url' => '0',
+    ];
+}
+
+function i_default_ai_settings(): array
+{
+    return [
+        'ai_api_url' => 'https://api.deepseek.com',
+        'ai_api_key' => '',
+        'ai_model' => 'deepseek-v4-flash',
+        'ai_slug_prompt' => 'Translate the title into a concise English URL slug. Output lowercase ASCII words separated only by hyphens. Output the slug only, without quotes or explanation.',
+        'ai_summary_prompt' => '根据文章内容生成不超过100个汉字的中文摘要。只输出摘要正文，不要标题、引号、解释或 Markdown 标记。',
+        'ai_polish_prompt' => '你是专业中文编辑。严格执行用户要求，保留有效 Markdown 结构。只输出处理后的完整正文，不要解释处理过程。',
+    ];
+}
+
+function i_default_mail_settings(): array
+{
+    return [
+        'smtp_enabled' => '0',
+        'smtp_host' => '',
+        'smtp_port' => '465',
+        'smtp_encryption' => 'ssl',
+        'smtp_username' => '',
+        'smtp_password' => '',
+        'smtp_from_email' => '',
+        'smtp_from_name' => '',
+        'smtp_notify_email' => '',
     ];
 }
 
@@ -504,6 +525,18 @@ $db->exec(
     )'
 );
 $db->exec(
+    'CREATE TABLE IF NOT EXISTS ai_settings(
+        name TEXT PRIMARY KEY,
+        value TEXT NOT NULL DEFAULT \'\'
+    )'
+);
+$db->exec(
+    'CREATE TABLE IF NOT EXISTS mail_settings(
+        name TEXT PRIMARY KEY,
+        value TEXT NOT NULL DEFAULT \'\'
+    )'
+);
+$db->exec(
     'CREATE TABLE IF NOT EXISTS users(
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         username TEXT NOT NULL UNIQUE,
@@ -590,6 +623,16 @@ $settings['pretty_url'] = $form['pretty_url'];
 $statement = $db->prepare('INSERT OR REPLACE INTO settings(name, value) VALUES(?, ?)');
 foreach ($settings as $name => $value) {
     $statement->execute([$name, $value]);
+}
+
+$aiStatement = $db->prepare('INSERT OR REPLACE INTO ai_settings(name, value) VALUES(?, ?)');
+foreach (i_default_ai_settings() as $name => $value) {
+    $aiStatement->execute([$name, $value]);
+}
+
+$mailStatement = $db->prepare('INSERT OR REPLACE INTO mail_settings(name, value) VALUES(?, ?)');
+foreach (i_default_mail_settings() as $name => $value) {
+    $mailStatement->execute([$name, $value]);
 }
 
 $db->prepare('INSERT INTO users(username, password_hash, nickname, email, avatar_url, website_url, social_links, created_at) VALUES(?, ?, ?, ?, ?, ?, ?, ?)')

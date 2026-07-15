@@ -161,6 +161,18 @@ function ensure_schema(PDO $pdo): void
         )"
     );
     $pdo->exec(
+        "CREATE TABLE IF NOT EXISTS ai_settings(
+            name TEXT PRIMARY KEY,
+            value TEXT NOT NULL DEFAULT ''
+        )"
+    );
+    $pdo->exec(
+        "CREATE TABLE IF NOT EXISTS mail_settings(
+            name TEXT PRIMARY KEY,
+            value TEXT NOT NULL DEFAULT ''
+        )"
+    );
+    $pdo->exec(
         "CREATE TABLE IF NOT EXISTS users(
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             username TEXT NOT NULL UNIQUE,
@@ -391,12 +403,6 @@ function default_settings(): array
         'site_tagline' => 'A small PHP blog running on one main entry file.',
         'site_description' => 'A simple PHP + SQLite blog inspired by Hugo Paper.',
         'site_keywords' => '',
-        'ai_api_url' => 'https://api.deepseek.com',
-        'ai_api_key' => '',
-        'ai_model' => 'deepseek-v4-flash',
-        'ai_slug_prompt' => 'Translate the title into a concise English URL slug. Output lowercase ASCII words separated only by hyphens. Output the slug only, without quotes or explanation.',
-        'ai_summary_prompt' => '根据文章内容生成不超过100个汉字的中文摘要。只输出摘要正文，不要标题、引号、解释或 Markdown 标记。',
-        'ai_polish_prompt' => '你是专业中文编辑。严格执行用户要求，保留有效 Markdown 结构。只输出处理后的完整正文，不要解释处理过程。',
         'site_footer' => '',
         'custom_head_code' => '',
         'favicon_url' => 'logo.png',
@@ -406,6 +412,33 @@ function default_settings(): array
         'comments_enabled' => '1',
         'comments_require_approval' => '1',
         'comments_notify' => '1',
+    ];
+}
+
+function default_ai_settings(): array
+{
+    return [
+        'ai_api_url' => 'https://api.deepseek.com',
+        'ai_api_key' => '',
+        'ai_model' => 'deepseek-v4-flash',
+        'ai_slug_prompt' => 'Translate the title into a concise English URL slug. Output lowercase ASCII words separated only by hyphens. Output the slug only, without quotes or explanation.',
+        'ai_summary_prompt' => '根据文章内容生成不超过100个汉字的中文摘要。只输出摘要正文，不要标题、引号、解释或 Markdown 标记。',
+        'ai_polish_prompt' => '你是专业中文编辑。严格执行用户要求，保留有效 Markdown 结构。只输出处理后的完整正文，不要解释处理过程。',
+    ];
+}
+
+function default_mail_settings(): array
+{
+    return [
+        'smtp_enabled' => '0',
+        'smtp_host' => '',
+        'smtp_port' => '465',
+        'smtp_encryption' => 'ssl',
+        'smtp_username' => '',
+        'smtp_password' => '',
+        'smtp_from_email' => '',
+        'smtp_from_name' => '',
+        'smtp_notify_email' => '',
     ];
 }
 
@@ -443,6 +476,72 @@ function setting(string $key, string $default = ''): string
 {
     $settings = settings_cache();
     return (string)($settings[$key] ?? $default);
+}
+
+function ai_settings(): array
+{
+    $settings = default_ai_settings();
+
+    try {
+        $rows = all_rows('SELECT name, value FROM ai_settings');
+        if (!$rows) {
+            $legacy = all_rows("SELECT name, value FROM settings WHERE name LIKE 'ai\\_%' ESCAPE '\\'");
+            if ($legacy) {
+                $statement = db()->prepare('INSERT OR REPLACE INTO ai_settings(name, value) VALUES(?, ?)');
+                foreach ($legacy as $row) {
+                    $statement->execute([(string)$row['name'], (string)$row['value']]);
+                }
+                q("DELETE FROM settings WHERE name LIKE 'ai\\_%' ESCAPE '\\'");
+                settings_cache(true);
+                $rows = $legacy;
+            }
+        }
+
+        foreach ($rows as $row) {
+            $settings[(string)$row['name']] = (string)$row['value'];
+        }
+    } catch (Throwable) {
+    }
+
+    return $settings;
+}
+
+function ai_setting(string $key, string $default = ''): string
+{
+    $settings = ai_settings();
+    return (string)($settings[$key] ?? $default);
+}
+
+function save_ai_settings(array $values): void
+{
+    $statement = db()->prepare('INSERT OR REPLACE INTO ai_settings(name, value) VALUES(?, ?)');
+
+    foreach ($values as $name => $value) {
+        $statement->execute([(string)$name, (string)$value]);
+    }
+}
+
+function mail_settings(): array
+{
+    $settings = default_mail_settings();
+
+    try {
+        foreach (all_rows('SELECT name, value FROM mail_settings') as $row) {
+            $settings[(string)$row['name']] = (string)$row['value'];
+        }
+    } catch (Throwable) {
+    }
+
+    return $settings;
+}
+
+function save_mail_settings(array $values): void
+{
+    $statement = db()->prepare('INSERT OR REPLACE INTO mail_settings(name, value) VALUES(?, ?)');
+
+    foreach ($values as $name => $value) {
+        $statement->execute([(string)$name, (string)$value]);
+    }
 }
 
 function save_settings(array $values): void
@@ -963,7 +1062,7 @@ function apply_pretty_route(): void
         return;
     }
 
-    if (preg_match('#^/admin/(posts|comments|categories|tags|links|users|ai|settings)/?$#i', $path, $matches)) {
+    if (preg_match('#^/admin/(posts|comments|categories|tags|links|users|ai|mail|settings)/?$#i', $path, $matches)) {
         set_route_params(['a' => 'admin_' . str_lower_u($matches[1])]);
         return;
     }
@@ -1066,12 +1165,14 @@ function url_for(string $route, array $params = []): string
         'admin_links' => $pretty ? app_path('/admin/links') : script_url() . '?a=admin_links',
         'admin_users' => $pretty ? app_path('/admin/users') : script_url() . '?a=admin_users',
         'admin_ai' => $pretty ? app_path('/admin/ai') : script_url() . '?a=admin_ai',
+        'admin_mail' => $pretty ? app_path('/admin/mail') : script_url() . '?a=admin_mail',
         'admin_settings' => $pretty ? app_path('/admin/settings') : script_url() . '?a=admin_settings',
         'write' => $pretty ? app_path('/write') : script_url() . '?a=write',
         'edit' => $pretty ? app_path('/edit/' . (int)($params['id'] ?? 0)) : script_url() . '?a=edit&id=' . (int)($params['id'] ?? 0),
         'post' => $pretty ? app_path('/archive/' . rawurlencode((string)($params['slug'] ?? ''))) : script_url() . '?a=post&slug=' . rawurlencode((string)($params['slug'] ?? '')),
         'save_settings' => script_url() . '?a=save_settings',
         'save_ai_settings' => script_url() . '?a=save_ai_settings',
+        'save_mail_settings' => script_url() . '?a=save_mail_settings',
         'ai_generate' => script_url() . '?a=ai_generate',
         'save_category' => script_url() . '?a=save_category',
         'delete_category' => script_url() . '?a=delete_category',
@@ -2627,6 +2728,7 @@ function admin_icon(string $name): string
         'links' => '<path d="M10 13a5 5 0 0 0 7.5.5l2-2a5 5 0 0 0-7.1-7.1l-1.1 1.1"></path><path d="M14 11a5 5 0 0 0-7.5-.5l-2 2a5 5 0 0 0 7.1 7.1l1.1-1.1"></path>',
         'users' => '<path d="M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2"></path><circle cx="9" cy="7" r="4"></circle><path d="M22 21v-2a4 4 0 0 0-3-3.87"></path><path d="M16 3.13a4 4 0 0 1 0 7.75"></path>',
         'ai' => '<path d="m12 3-1.4 3.6L7 8l3.6 1.4L12 13l1.4-3.6L17 8l-3.6-1.4L12 3z"></path><path d="m5 14-.8 2.2L2 17l2.2.8L5 20l.8-2.2L8 17l-2.2-.8L5 14z"></path><path d="m19 13-1 2.5-2.5 1 2.5 1L19 20l1-2.5 2.5-1-2.5-1L19 13z"></path>',
+        'mail' => '<path d="M4 4h16a2 2 0 0 1 2 2v12a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V6a2 2 0 0 1 2-2z"></path><path d="m22 6-10 7L2 6"></path>',
         'settings' => '<path d="M12 15.5A3.5 3.5 0 1 0 12 8a3.5 3.5 0 0 0 0 7.5z"></path><path d="M19.4 15a1.7 1.7 0 0 0 .3 1.9l.1.1a2 2 0 1 1-2.8 2.8l-.1-.1a1.7 1.7 0 0 0-1.9-.3 1.7 1.7 0 0 0-1 1.5V21a2 2 0 1 1-4 0v-.1a1.7 1.7 0 0 0-1-1.5 1.7 1.7 0 0 0-1.9.3l-.1.1A2 2 0 1 1 4.2 17l.1-.1a1.7 1.7 0 0 0 .3-1.9 1.7 1.7 0 0 0-1.5-1H3a2 2 0 1 1 0-4h.1a1.7 1.7 0 0 0 1.5-1 1.7 1.7 0 0 0-.3-1.9L4.2 7A2 2 0 1 1 7 4.2l.1.1a1.7 1.7 0 0 0 1.9.3h.1a1.7 1.7 0 0 0 1-1.5V3a2 2 0 1 1 4 0v.1a1.7 1.7 0 0 0 1 1.5h.1a1.7 1.7 0 0 0 1.9-.3l.1-.1A2 2 0 1 1 19.8 7l-.1.1a1.7 1.7 0 0 0-.3 1.9v.1a1.7 1.7 0 0 0 1.5 1h.1a2 2 0 1 1 0 4h-.1a1.7 1.7 0 0 0-1.5 1z"></path>',
         'logout' => '<path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4"></path><path d="M16 17l5-5-5-5"></path><path d="M21 12H9"></path>',
         default => '<circle cx="12" cy="12" r="8"></circle>',
@@ -2702,6 +2804,13 @@ function render_admin_sidebar(string $active, array $summary = []): string
             'note' => '模型与接口',
             'href' => url_for('admin_ai'),
             'active' => $active === 'ai',
+        ],
+        [
+            'label' => '邮件通知',
+            'icon' => 'mail',
+            'note' => 'SMTP 设置',
+            'href' => url_for('admin_mail'),
+            'active' => $active === 'mail',
         ],
         [
             'label' => '站点设置',
@@ -3374,6 +3483,110 @@ function password_reset_notice_path(string $token): string
     return CACHE_DIR . '/password-reset-' . substr(hash('sha256', $token), 0, 16) . '.txt';
 }
 
+function mail_header_value(string $value): string
+{
+    return trim((string)preg_replace('/[\r\n]+/', ' ', $value));
+}
+
+function mail_address_header(string $email, string $name = ''): string
+{
+    $email = mail_header_value($email);
+    $name = mail_header_value($name);
+    if ($name === '') {
+        return '<' . $email . '>';
+    }
+
+    return '=?UTF-8?B?' . base64_encode($name) . '?= <' . $email . '>';
+}
+
+function smtp_read_response($socket): array
+{
+    $response = '';
+    while (($line = fgets($socket, 515)) !== false) {
+        $response .= $line;
+        if (preg_match('/^\d{3} /', $line)) {
+            break;
+        }
+    }
+
+    return [(int)substr($response, 0, 3), $response];
+}
+
+function smtp_expect($socket, array $accepted, string $command = ''): bool
+{
+    if ($command !== '' && fwrite($socket, $command . "\r\n") === false) {
+        return false;
+    }
+    [$code] = smtp_read_response($socket);
+    return in_array($code, $accepted, true);
+}
+
+function smtp_send_mail(string $to, string $subject, string $body): bool
+{
+    $settings = mail_settings();
+    if ($settings['smtp_enabled'] !== '1') {
+        return false;
+    }
+
+    $host = trim((string)$settings['smtp_host']);
+    $port = (int)$settings['smtp_port'];
+    $encryption = (string)$settings['smtp_encryption'];
+    $username = trim((string)$settings['smtp_username']);
+    $password = (string)$settings['smtp_password'];
+    $fromEmail = trim((string)$settings['smtp_from_email']);
+    $fromName = trim((string)$settings['smtp_from_name']);
+    $to = trim($to);
+    if ($host === '' || $port < 1 || $port > 65535 || !filter_var($fromEmail, FILTER_VALIDATE_EMAIL) || !filter_var($to, FILTER_VALIDATE_EMAIL)) {
+        return false;
+    }
+
+    $remote = ($encryption === 'ssl' ? 'ssl://' : '') . $host;
+    $socket = @stream_socket_client($remote . ':' . $port, $errno, $errstr, 15, STREAM_CLIENT_CONNECT);
+    if (!is_resource($socket)) {
+        return false;
+    }
+    stream_set_timeout($socket, 20);
+
+    try {
+        if (!smtp_expect($socket, [220])) { return false; }
+        $serverName = (string)(parse_url(site_root_url(), PHP_URL_HOST) ?: 'localhost');
+        if (!smtp_expect($socket, [250], 'EHLO ' . $serverName)) { return false; }
+        if ($encryption === 'tls') {
+            if (!smtp_expect($socket, [220], 'STARTTLS')) { return false; }
+            if (!stream_socket_enable_crypto($socket, true, STREAM_CRYPTO_METHOD_TLS_CLIENT)) { return false; }
+            if (!smtp_expect($socket, [250], 'EHLO ' . $serverName)) { return false; }
+        }
+        if ($username !== '') {
+            if (!smtp_expect($socket, [334], 'AUTH LOGIN')) { return false; }
+            if (!smtp_expect($socket, [334], base64_encode($username))) { return false; }
+            if (!smtp_expect($socket, [235], base64_encode($password))) { return false; }
+        }
+        if (!smtp_expect($socket, [250], 'MAIL FROM:<' . $fromEmail . '>')) { return false; }
+        if (!smtp_expect($socket, [250, 251], 'RCPT TO:<' . $to . '>')) { return false; }
+        if (!smtp_expect($socket, [354], 'DATA')) { return false; }
+
+        $encodedSubject = '=?UTF-8?B?' . base64_encode(mail_header_value($subject)) . '?=';
+        $message = implode("\n", [
+            'Date: ' . date(DATE_RFC2822),
+            'From: ' . mail_address_header($fromEmail, $fromName !== '' ? $fromName : setting('site_name', default_settings()['site_name'])),
+            'To: ' . mail_address_header($to),
+            'Subject: ' . $encodedSubject,
+            'MIME-Version: 1.0',
+            'Content-Type: text/plain; charset=UTF-8',
+            'Content-Transfer-Encoding: 8bit',
+            '',
+            str_replace(["\r\n", "\r"], "\n", $body),
+        ]);
+        $message = preg_replace('/^\./m', '..', $message);
+        if (fwrite($socket, str_replace("\n", "\r\n", (string)$message) . "\r\n.\r\n") === false) { return false; }
+        $ok = smtp_expect($socket, [250]);
+        smtp_expect($socket, [221], 'QUIT');
+        return $ok;
+    } finally {
+        fclose($socket);
+    }
+}
+
 function create_password_reset(array $user): array
 {
     $token = bin2hex(random_bytes(32));
@@ -3393,12 +3606,16 @@ function send_password_reset_notice(array $user, string $token, int $expiresAt):
 {
     $link = absolute_url(url_with_query(url_for('reset_password'), ['token' => $token]));
     $siteName = setting('site_name', default_settings()['site_name']);
+    $subject = '重置 ' . $siteName . ' 管理员密码';
     $body = "你正在重置 {$siteName} 的管理员密码。\n\n重置链接：{$link}\n\n链接将在 " . date('Y-m-d H:i:s', $expiresAt) . " 过期。如果不是你本人操作，请忽略这封邮件。";
     $sent = false;
     $email = trim((string)($user['email'] ?? ''));
 
-    if ($email !== '' && filter_var($email, FILTER_VALIDATE_EMAIL) && function_exists('mail')) {
-        $subject = '重置 ' . $siteName . ' 管理员密码';
+    if ($email !== '' && filter_var($email, FILTER_VALIDATE_EMAIL)) {
+        $sent = smtp_send_mail($email, $subject, $body);
+    }
+
+    if (!$sent && $email !== '' && filter_var($email, FILTER_VALIDATE_EMAIL) && function_exists('mail')) {
         $headers = [
             'Content-Type: text/plain; charset=UTF-8',
             'From: ' . preg_replace('/[\r\n]+/', '', $siteName) . ' <no-reply@' . parse_url(site_root_url(), PHP_URL_HOST) . '>',
@@ -3408,6 +3625,32 @@ function send_password_reset_notice(array $user, string $token, int $expiresAt):
 
     file_put_contents(password_reset_notice_path($token), $body . "\n", LOCK_EX);
     return $sent;
+}
+
+function comment_notify_email(): string
+{
+    $settings = mail_settings();
+    $email = trim((string)$settings['smtp_notify_email']);
+    if ($email !== '' && filter_var($email, FILTER_VALIDATE_EMAIL)) {
+        return $email;
+    }
+
+    $adminEmail = (string)val("SELECT email FROM users WHERE email <> '' ORDER BY id ASC LIMIT 1");
+    return filter_var($adminEmail, FILTER_VALIDATE_EMAIL) ? $adminEmail : '';
+}
+
+function send_comment_notification(array $post, array $comment, string $status): bool
+{
+    $email = comment_notify_email();
+    if ($email === '') {
+        return false;
+    }
+
+    $siteName = setting('site_name', default_settings()['site_name']);
+    $subject = '新评论：' . (string)$post['title'];
+    $body = "站点：{$siteName}\n文章：" . (string)$post['title'] . "\n状态：" . ($status === 'approved' ? '已发布' : '待审核') . "\n评论人：" . (string)$comment['author_name'] . "\n邮箱：" . (string)$comment['author_email'] . "\n链接：" . absolute_url(content_permalink($post)) . "#comments\n\n评论内容：\n" . (string)$comment['content'];
+
+    return smtp_send_mail($email, $subject, $body);
 }
 
 function password_reset_by_token(string $token): ?array
@@ -4179,17 +4422,18 @@ function render_admin_users_page(array $form = [], array $errors = []): void
 function render_admin_ai_page(): void
 {
     require_admin();
+    $aiSettings = ai_settings();
     $sidebar = render_admin_sidebar('ai');
     ob_start(); ?>
     <div class="admin-shell"><?= $sidebar ?><div class="admin-main"><?= render_admin_topbar('AI 设置') ?>
       <section class="panel admin-list-panel"><div class="panel__header"><h2>模型接口</h2><p class="panel__meta">兼容 OpenAI Chat Completions 格式的服务。</p></div><div class="panel__body">
         <form class="form-stack" method="post" action="<?= h(url_for('save_ai_settings')) ?>"><?= csrf_field() ?>
-          <div class="field"><label for="ai_api_url">API 地址</label><input id="ai_api_url" name="ai_api_url" type="url" value="<?= h(setting('ai_api_url', 'https://api.deepseek.com')) ?>" placeholder="https://api.deepseek.com" required><p class="field-hint">可以填写服务根地址或完整的 /chat/completions 地址。</p></div>
-          <div class="field"><label for="ai_api_key">API 密钥</label><input id="ai_api_key" name="ai_api_key" type="password" value="" placeholder="<?= setting('ai_api_key') !== '' ? '已保存，留空则不修改' : 'sk-...' ?>" autocomplete="new-password"><p class="field-hint">密钥仅保存在服务器 SQLite 中，不会发送到浏览器前端。</p></div>
-          <div class="field"><label for="ai_model">模型名称</label><input id="ai_model" name="ai_model" value="<?= h(setting('ai_model', 'deepseek-v4-flash')) ?>" placeholder="deepseek-v4-flash" required></div>
-          <div class="field"><label for="ai_slug_prompt">Slug 提示词</label><textarea id="ai_slug_prompt" name="ai_slug_prompt" rows="4" required><?= h(setting('ai_slug_prompt', default_settings()['ai_slug_prompt'])) ?></textarea></div>
-          <div class="field"><label for="ai_summary_prompt">摘要提示词</label><textarea id="ai_summary_prompt" name="ai_summary_prompt" rows="4" required><?= h(setting('ai_summary_prompt', default_settings()['ai_summary_prompt'])) ?></textarea></div>
-          <div class="field"><label for="ai_polish_prompt">润色提示词</label><textarea id="ai_polish_prompt" name="ai_polish_prompt" rows="4" required><?= h(setting('ai_polish_prompt', default_settings()['ai_polish_prompt'])) ?></textarea><p class="field-hint">弹窗中填写的具体要求会追加到这条系统提示词之后。</p></div>
+          <div class="field"><label for="ai_api_url">API 地址</label><input id="ai_api_url" name="ai_api_url" type="url" value="<?= h((string)$aiSettings['ai_api_url']) ?>" placeholder="https://api.deepseek.com" required><p class="field-hint">可以填写服务根地址或完整的 /chat/completions 地址。</p></div>
+          <div class="field"><label for="ai_api_key">API 密钥</label><input id="ai_api_key" name="ai_api_key" type="password" value="" placeholder="<?= $aiSettings['ai_api_key'] !== '' ? '已保存，留空则不修改' : 'sk-...' ?>" autocomplete="new-password"><p class="field-hint">密钥仅保存在服务器 SQLite 中，不会发送到浏览器前端。</p></div>
+          <div class="field"><label for="ai_model">模型名称</label><input id="ai_model" name="ai_model" value="<?= h((string)$aiSettings['ai_model']) ?>" placeholder="deepseek-v4-flash" required></div>
+          <div class="field"><label for="ai_slug_prompt">Slug 提示词</label><textarea id="ai_slug_prompt" name="ai_slug_prompt" rows="4" required><?= h((string)$aiSettings['ai_slug_prompt']) ?></textarea></div>
+          <div class="field"><label for="ai_summary_prompt">摘要提示词</label><textarea id="ai_summary_prompt" name="ai_summary_prompt" rows="4" required><?= h((string)$aiSettings['ai_summary_prompt']) ?></textarea></div>
+          <div class="field"><label for="ai_polish_prompt">润色提示词</label><textarea id="ai_polish_prompt" name="ai_polish_prompt" rows="4" required><?= h((string)$aiSettings['ai_polish_prompt']) ?></textarea><p class="field-hint">弹窗中填写的具体要求会追加到这条系统提示词之后。</p></div>
           <div class="action-row"><button class="button">保存 AI 设置</button></div>
         </form>
       </div></section>
@@ -4197,11 +4441,44 @@ function render_admin_ai_page(): void
     render_layout('AI 设置', (string)ob_get_clean(), ['active' => 'ai', 'wide' => true, 'description' => 'AI 模型设置']);
 }
 
+function render_admin_mail_page(): void
+{
+    require_admin();
+    $mailSettings = mail_settings();
+    $sidebar = render_admin_sidebar('mail');
+    $encryption = (string)$mailSettings['smtp_encryption'];
+    ob_start(); ?>
+    <div class="admin-shell"><?= $sidebar ?><div class="admin-main"><?= render_admin_topbar('邮件通知') ?>
+      <section class="panel admin-list-panel"><div class="panel__header"><h2>SMTP 设置</h2><p class="panel__meta">用于发送站点通知邮件，配置不会写入缓存文件。</p></div><div class="panel__body">
+        <form class="form-stack" method="post" action="<?= h(url_for('save_mail_settings')) ?>"><?= csrf_field() ?>
+          <label class="setting-option"><input name="smtp_enabled" type="checkbox" value="1"<?= $mailSettings['smtp_enabled'] === '1' ? ' checked' : '' ?>><span>启用 SMTP 邮件通知</span></label>
+          <div class="field-grid">
+            <div class="field"><label for="smtp_host">SMTP 主机</label><input id="smtp_host" name="smtp_host" value="<?= h((string)$mailSettings['smtp_host']) ?>" placeholder="smtp.example.com" maxlength="255"></div>
+            <div class="field"><label for="smtp_port">端口</label><input id="smtp_port" name="smtp_port" type="number" min="1" max="65535" value="<?= h((string)$mailSettings['smtp_port']) ?>" placeholder="465"></div>
+          </div>
+          <div class="field-grid">
+            <div class="field"><label for="smtp_encryption">加密方式</label><select id="smtp_encryption" name="smtp_encryption"><option value="ssl"<?= $encryption === 'ssl' ? ' selected' : '' ?>>SSL</option><option value="tls"<?= $encryption === 'tls' ? ' selected' : '' ?>>TLS</option><option value="none"<?= $encryption === 'none' ? ' selected' : '' ?>>无</option></select></div>
+            <div class="field"><label for="smtp_username">SMTP 账号</label><input id="smtp_username" name="smtp_username" value="<?= h((string)$mailSettings['smtp_username']) ?>" maxlength="255" autocomplete="username"></div>
+          </div>
+          <div class="field"><label for="smtp_password">SMTP 密码</label><input id="smtp_password" name="smtp_password" type="password" value="" placeholder="<?= $mailSettings['smtp_password'] !== '' ? '已保存，留空则不修改' : '授权码或密码' ?>" autocomplete="new-password"></div>
+          <div class="field-grid">
+            <div class="field"><label for="smtp_from_email">发件邮箱</label><input id="smtp_from_email" name="smtp_from_email" type="email" value="<?= h((string)$mailSettings['smtp_from_email']) ?>" maxlength="160" placeholder="noreply@example.com"></div>
+            <div class="field"><label for="smtp_from_name">发件名称</label><input id="smtp_from_name" name="smtp_from_name" value="<?= h((string)$mailSettings['smtp_from_name']) ?>" maxlength="120" placeholder="<?= h(setting('site_name', default_settings()['site_name'])) ?>"></div>
+          </div>
+          <div class="field"><label for="smtp_notify_email">通知收件邮箱</label><input id="smtp_notify_email" name="smtp_notify_email" type="email" value="<?= h((string)$mailSettings['smtp_notify_email']) ?>" maxlength="160" placeholder="admin@example.com"><p class="field-hint">留空时可使用管理员账号邮箱作为通知收件人。</p></div>
+          <div class="action-row"><button class="button">保存邮件设置</button></div>
+        </form>
+      </div></section>
+    </div></div><?php
+    render_layout('邮件通知', (string)ob_get_clean(), ['active' => 'mail', 'wide' => true, 'description' => 'SMTP 邮件通知设置']);
+}
+
 function ai_completion(string $instruction, string $content): array
 {
-    $baseUrl = rtrim(trim(setting('ai_api_url')), '/');
-    $apiKey = trim(setting('ai_api_key'));
-    $model = trim(setting('ai_model'));
+    $aiSettings = ai_settings();
+    $baseUrl = rtrim(trim((string)$aiSettings['ai_api_url']), '/');
+    $apiKey = trim((string)$aiSettings['ai_api_key']);
+    $model = trim((string)$aiSettings['ai_model']);
     if ($baseUrl === '' || $apiKey === '' || $model === '') { return [false, '请先完成 AI 设置。']; }
     $url = str_ends_with($baseUrl, '/chat/completions') ? $baseUrl : $baseUrl . '/chat/completions';
     $endpoint = validated_ai_endpoint($url);
@@ -4663,6 +4940,12 @@ switch ($action) {
                 }
             }
             $database->commit();
+            if ($isRead === 0) {
+                try {
+                    send_comment_notification($post, $comment, $status);
+                } catch (Throwable) {
+                }
+            }
         } catch (Throwable $exception) {
             if ($database->inTransaction()) {
                 $database->rollBack();
@@ -4845,6 +5128,10 @@ switch ($action) {
         render_admin_ai_page();
         break;
 
+    case 'admin_mail':
+        render_admin_mail_page();
+        break;
+
     case 'admin_settings':
         render_admin_settings_page();
         break;
@@ -4863,9 +5150,47 @@ switch ($action) {
         }
         $values = ['ai_api_url' => $apiUrl, 'ai_model' => $model, 'ai_slug_prompt' => $slugPrompt, 'ai_summary_prompt' => $summaryPrompt, 'ai_polish_prompt' => $polishPrompt];
         if ($apiKey !== '') { $values['ai_api_key'] = $apiKey; }
-        save_settings($values);
+        save_ai_settings($values);
         set_flash('success', 'AI 设置已保存。');
         redirect_to(url_for('admin_ai'));
+        break;
+
+    case 'save_mail_settings':
+        require_admin_post(url_for('admin_mail'));
+        $enabled = isset($_POST['smtp_enabled']) ? '1' : '0';
+        $host = trim((string)($_POST['smtp_host'] ?? ''));
+        $port = max(1, min(65535, (int)($_POST['smtp_port'] ?? 465)));
+        $encryption = (string)($_POST['smtp_encryption'] ?? 'ssl');
+        if (!in_array($encryption, ['ssl', 'tls', 'none'], true)) {
+            $encryption = 'ssl';
+        }
+        $username = trim((string)($_POST['smtp_username'] ?? ''));
+        $password = trim((string)($_POST['smtp_password'] ?? ''));
+        $fromEmail = str_lower_u(trim((string)($_POST['smtp_from_email'] ?? '')));
+        $fromName = trim((string)($_POST['smtp_from_name'] ?? ''));
+        $notifyEmail = str_lower_u(trim((string)($_POST['smtp_notify_email'] ?? '')));
+        if ($enabled === '1' && ($host === '' || $fromEmail === '' || !filter_var($fromEmail, FILTER_VALIDATE_EMAIL))) {
+            set_flash('error', '启用 SMTP 时，请填写 SMTP 主机和有效的发件邮箱。');
+            redirect_to(url_for('admin_mail'));
+        }
+        if ($notifyEmail !== '' && !filter_var($notifyEmail, FILTER_VALIDATE_EMAIL)) {
+            set_flash('error', '通知收件邮箱格式不正确。');
+            redirect_to(url_for('admin_mail'));
+        }
+        $values = [
+            'smtp_enabled' => $enabled,
+            'smtp_host' => str_sub_u($host, 0, 255),
+            'smtp_port' => (string)$port,
+            'smtp_encryption' => $encryption,
+            'smtp_username' => str_sub_u($username, 0, 255),
+            'smtp_from_email' => str_sub_u($fromEmail, 0, 160),
+            'smtp_from_name' => str_sub_u($fromName, 0, 120),
+            'smtp_notify_email' => str_sub_u($notifyEmail, 0, 160),
+        ];
+        if ($password !== '') { $values['smtp_password'] = $password; }
+        save_mail_settings($values);
+        set_flash('success', '邮件通知设置已保存。');
+        redirect_to(url_for('admin_mail'));
         break;
 
     case 'ai_generate':
@@ -4878,15 +5203,15 @@ switch ($action) {
         if (str_len_u($content) > 50000) { json_response(['ok' => false, 'error' => '内容过长，请控制在 50000 字以内。'], 422); }
         if ($type === 'slug') {
             if ($content === '') { json_response(['ok' => false, 'error' => '请先填写文章标题。'], 422); }
-            [$ok, $result] = ai_completion(setting('ai_slug_prompt', default_settings()['ai_slug_prompt']), $content);
+            [$ok, $result] = ai_completion(ai_setting('ai_slug_prompt', default_ai_settings()['ai_slug_prompt']), $content);
             if ($ok) { $result = trim((string)preg_replace('/[^a-z0-9]+/', '-', str_lower_u($result)), '-'); $result = substr($result, 0, 100); }
         } elseif ($type === 'summary') {
             if ($content === '') { json_response(['ok' => false, 'error' => '请先填写文章正文。'], 422); }
-            [$ok, $result] = ai_completion(setting('ai_summary_prompt', default_settings()['ai_summary_prompt']), $content);
+            [$ok, $result] = ai_completion(ai_setting('ai_summary_prompt', default_ai_settings()['ai_summary_prompt']), $content);
             if ($ok) { $result = str_sub_u($result, 0, 100); }
         } elseif ($type === 'polish') {
             if ($instruction === '') { json_response(['ok' => false, 'error' => '请填写润色或生成要求。'], 422); }
-            [$ok, $result] = ai_completion(setting('ai_polish_prompt', default_settings()['ai_polish_prompt']) . ' 用户要求：' . $instruction, $content !== '' ? $content : '请根据要求生成正文。');
+            [$ok, $result] = ai_completion(ai_setting('ai_polish_prompt', default_ai_settings()['ai_polish_prompt']) . ' 用户要求：' . $instruction, $content !== '' ? $content : '请根据要求生成正文。');
         } else { json_response(['ok' => false, 'error' => '未知的 AI 操作。'], 422); }
         if (!$ok) { json_response(['ok' => false, 'error' => $result], 502); }
         json_response(['ok' => true, 'result' => $result]);

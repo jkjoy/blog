@@ -14,8 +14,10 @@ session_set_cookie_params([
 session_start();
 
 const UPDATE_DATA_DIR = __DIR__ . '/data';
+const UPDATE_CACHE_DIR = __DIR__ . '/cache';
 const UPDATE_CONFIG_FILE = UPDATE_DATA_DIR . '/config.php';
 const UPDATE_LOCK_FILE = UPDATE_DATA_DIR . '/install.lock';
+const UPDATE_SETTINGS_CACHE_FILE = UPDATE_CACHE_DIR . '/settings.php';
 
 function update_h(string|int $value): string
 {
@@ -60,6 +62,55 @@ function update_has_column(PDO $db, string $table, string $column): bool
         }
     }
     return false;
+}
+
+function update_default_settings(): array
+{
+    return [
+        'site_name' => 'Simple PHP Blog',
+        'site_url' => '',
+        'site_tagline' => 'A small PHP blog running on one main entry file.',
+        'site_description' => 'A simple PHP + SQLite blog inspired by Hugo Paper.',
+        'site_keywords' => '',
+        'site_footer' => '',
+        'custom_head_code' => '',
+        'favicon_url' => 'logo.png',
+        'footer_beian' => '',
+        'posts_per_page' => '6',
+        'pretty_url' => '0',
+        'comments_enabled' => '1',
+        'comments_require_approval' => '1',
+        'comments_notify' => '1',
+    ];
+}
+
+function update_default_mail_settings(): array
+{
+    return [
+        'smtp_enabled' => '0',
+        'smtp_host' => '',
+        'smtp_port' => '465',
+        'smtp_encryption' => 'ssl',
+        'smtp_username' => '',
+        'smtp_password' => '',
+        'smtp_from_email' => '',
+        'smtp_from_name' => '',
+        'smtp_notify_email' => '',
+    ];
+}
+
+function update_write_settings_cache(PDO $db): void
+{
+    if (!is_dir(UPDATE_CACHE_DIR)) {
+        mkdir(UPDATE_CACHE_DIR, 0775, true);
+    }
+
+    $settings = update_default_settings();
+    foreach ($db->query('SELECT name, value FROM settings') as $row) {
+        $settings[(string)$row['name']] = (string)$row['value'];
+    }
+
+    file_put_contents(UPDATE_SETTINGS_CACHE_FILE, "<?php\nreturn " . var_export($settings, true) . ";\n", LOCK_EX);
 }
 
 $databaseFile = update_database_file();
@@ -151,7 +202,40 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             if ($commentsExist && !$emailApprovalIndexExists) {
                 $changes[] = '新增评论邮箱审核查询索引';
             }
+
+            $db->exec(
+                "CREATE TABLE IF NOT EXISTS ai_settings(
+                    name TEXT PRIMARY KEY,
+                    value TEXT NOT NULL DEFAULT ''
+                )"
+            );
+            $legacyAiSettings = $db->query("SELECT name, value FROM settings WHERE name LIKE 'ai\\_%' ESCAPE '\\'")->fetchAll();
+            if ($legacyAiSettings) {
+                $statement = $db->prepare('INSERT OR REPLACE INTO ai_settings(name, value) VALUES(?, ?)');
+                foreach ($legacyAiSettings as $row) {
+                    $statement->execute([(string)$row['name'], (string)$row['value']]);
+                }
+                $db->exec("DELETE FROM settings WHERE name LIKE 'ai\\_%' ESCAPE '\\'");
+                $changes[] = '迁移 AI 设置到独立数据表';
+            }
+
+            $mailSettingsExist = (bool)$db->query("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'mail_settings' LIMIT 1")->fetchColumn();
+            $db->exec(
+                "CREATE TABLE IF NOT EXISTS mail_settings(
+                    name TEXT PRIMARY KEY,
+                    value TEXT NOT NULL DEFAULT ''
+                )"
+            );
+            $mailStatement = $db->prepare('INSERT OR IGNORE INTO mail_settings(name, value) VALUES(?, ?)');
+            foreach (update_default_mail_settings() as $name => $value) {
+                $mailStatement->execute([$name, $value]);
+            }
+            if (!$mailSettingsExist) {
+                $changes[] = '新增邮件通知设置表';
+            }
+
             $db->commit();
+            update_write_settings_cache($db);
             $message = $changes ? '数据库升级完成：' . implode('、', $changes) . '。' : '数据库已经是最新版本，无需变更。';
         } catch (Throwable $exception) {
             if ($db->inTransaction()) {
@@ -181,7 +265,7 @@ if (!isset($_SESSION['csrf_token']) || !is_string($_SESSION['csrf_token']) || $_
       <div class="panel__body">
         <?php if ($message !== ''): ?><div class="flash flash--success"><?= update_h($message) ?></div><?php endif; ?>
         <?php if ($error !== ''): ?><div class="flash flash--error"><?= update_h($error) ?></div><?php endif; ?>
-        <p>本次升级将补齐文章置顶字段、评论数据表、回复字段、登录用户关联字段和对应查询索引。操作可重复执行，不会覆盖现有内容。</p>
+        <p>本次升级将补齐文章置顶字段、评论数据表、回复字段、登录用户关联字段、对应查询索引，将 AI 设置迁移到独立数据表，并新增邮件通知设置表。操作可重复执行，不会覆盖现有内容。</p>
         <form method="post">
           <input type="hidden" name="csrf_token" value="<?= update_h((string)$_SESSION['csrf_token']) ?>">
           <div class="form-actions">
