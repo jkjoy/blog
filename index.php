@@ -13,7 +13,7 @@ session_set_cookie_params([
 ]);
 session_start();
 
-const APP_VERSION = 'v1.2.0';
+const APP_VERSION = 'v1.2.1';
 const DATA_DIR = __DIR__ . '/data';
 const CACHE_DIR = __DIR__ . '/cache';
 const UPLOAD_DIR = __DIR__ . '/uploads';
@@ -170,6 +170,12 @@ function ensure_schema(PDO $pdo): void
     );
     $pdo->exec(
         "CREATE TABLE IF NOT EXISTS mail_settings(
+            name TEXT PRIMARY KEY,
+            value TEXT NOT NULL DEFAULT ''
+        )"
+    );
+    $pdo->exec(
+        "CREATE TABLE IF NOT EXISTS s3_settings(
             name TEXT PRIMARY KEY,
             value TEXT NOT NULL DEFAULT ''
         )"
@@ -455,6 +461,22 @@ function default_mail_settings(): array
     ];
 }
 
+function default_s3_settings(): array
+{
+    return [
+        's3_enabled' => '0',
+        's3_keep_local' => '1',
+        's3_endpoint' => 'https://s3.amazonaws.com',
+        's3_region' => 'us-east-1',
+        's3_bucket' => '',
+        's3_access_key' => '',
+        's3_secret_key' => '',
+        's3_path_prefix' => 'uploads',
+        's3_public_url' => '',
+        's3_path_style' => '0',
+    ];
+}
+
 function settings_cache(bool $refresh = false): array
 {
     static $settings = null;
@@ -551,6 +573,29 @@ function mail_settings(): array
 function save_mail_settings(array $values): void
 {
     $statement = db()->prepare('INSERT OR REPLACE INTO mail_settings(name, value) VALUES(?, ?)');
+
+    foreach ($values as $name => $value) {
+        $statement->execute([(string)$name, (string)$value]);
+    }
+}
+
+function s3_settings(): array
+{
+    $settings = default_s3_settings();
+
+    try {
+        foreach (all_rows('SELECT name, value FROM s3_settings') as $row) {
+            $settings[(string)$row['name']] = (string)$row['value'];
+        }
+    } catch (Throwable) {
+    }
+
+    return $settings;
+}
+
+function save_s3_settings(array $values): void
+{
+    $statement = db()->prepare('INSERT OR REPLACE INTO s3_settings(name, value) VALUES(?, ?)');
 
     foreach ($values as $name => $value) {
         $statement->execute([(string)$name, (string)$value]);
@@ -820,6 +865,143 @@ function upload_error_message(int $code): string
     };
 }
 
+function s3_endpoint_parts(string $endpoint): ?array
+{
+    if (!filter_var($endpoint, FILTER_VALIDATE_URL)) {
+        return null;
+    }
+
+    $parts = parse_url($endpoint);
+    if (!is_array($parts)) {
+        return null;
+    }
+    $scheme = str_lower_u((string)($parts['scheme'] ?? ''));
+    if (!in_array($scheme, ['http', 'https'], true) || trim((string)($parts['host'] ?? '')) === ''
+        || isset($parts['user']) || isset($parts['pass']) || isset($parts['query']) || isset($parts['fragment'])) {
+        return null;
+    }
+
+    $parts['scheme'] = $scheme;
+    return $parts;
+}
+
+function s3_encoded_path(array $segments): string
+{
+    $segments = array_values(array_filter($segments, static fn(string $segment): bool => $segment !== ''));
+    return '/' . implode('/', array_map(static fn(string $segment): string => rawurlencode(rawurldecode($segment)), $segments));
+}
+
+function s3_request_target(array $settings, string $key): ?array
+{
+    $parts = s3_endpoint_parts(rtrim(trim((string)$settings['s3_endpoint']), '/'));
+    $bucket = trim((string)$settings['s3_bucket']);
+    if ($parts === null || $bucket === '') {
+        return null;
+    }
+
+    $pathStyle = (string)$settings['s3_path_style'] === '1';
+    $hostName = trim((string)$parts['host'], '[]');
+    if (!$pathStyle) {
+        $hostName = $bucket . '.' . $hostName;
+    }
+    $urlHost = str_contains($hostName, ':') ? '[' . $hostName . ']' : $hostName;
+    $host = $urlHost . (isset($parts['port']) ? ':' . (int)$parts['port'] : '');
+    $segments = preg_split('#/+#', trim((string)($parts['path'] ?? ''), '/')) ?: [];
+    if ($pathStyle) {
+        $segments[] = $bucket;
+    }
+    $segments = array_merge($segments, preg_split('#/+#', trim($key, '/')) ?: []);
+    $uri = s3_encoded_path($segments);
+    $url = $parts['scheme'] . '://' . $host . $uri;
+
+    $publicBase = rtrim(trim((string)$settings['s3_public_url']), '/');
+    $publicUrl = $publicBase !== ''
+        ? $publicBase . s3_encoded_path(preg_split('#/+#', trim($key, '/')) ?: [])
+        : $url;
+
+    return ['url' => $url, 'public_url' => $publicUrl, 'host' => $host, 'uri' => $uri];
+}
+
+function upload_file_to_s3(string $file, string $key, string $mime, array $settings): array
+{
+    $region = trim((string)$settings['s3_region']);
+    $accessKey = trim((string)$settings['s3_access_key']);
+    $secretKey = (string)$settings['s3_secret_key'];
+    $target = s3_request_target($settings, $key);
+    if ($target === null || $region === '' || $accessKey === '' || $secretKey === '') {
+        return [false, '', 'S3 配置不完整。'];
+    }
+    if (!function_exists('curl_init')) {
+        return [false, '', '服务器缺少 cURL 扩展，无法上传到 S3。'];
+    }
+
+    $payloadHash = hash_file('sha256', $file);
+    $stream = fopen($file, 'rb');
+    if ($payloadHash === false || $stream === false) {
+        if (is_resource($stream)) { fclose($stream); }
+        return [false, '', '无法读取待上传文件。'];
+    }
+
+    $amzDate = gmdate('Ymd\THis\Z');
+    $dateStamp = gmdate('Ymd');
+    $canonicalHeaders = 'content-type:' . $mime . "\n"
+        . 'host:' . $target['host'] . "\n"
+        . 'x-amz-content-sha256:' . $payloadHash . "\n"
+        . 'x-amz-date:' . $amzDate . "\n";
+    $signedHeaders = 'content-type;host;x-amz-content-sha256;x-amz-date';
+    $canonicalRequest = "PUT\n" . $target['uri'] . "\n\n" . $canonicalHeaders . "\n" . $signedHeaders . "\n" . $payloadHash;
+    $scope = $dateStamp . '/' . $region . '/s3/aws4_request';
+    $stringToSign = "AWS4-HMAC-SHA256\n" . $amzDate . "\n" . $scope . "\n" . hash('sha256', $canonicalRequest);
+    $dateKey = hash_hmac('sha256', $dateStamp, 'AWS4' . $secretKey, true);
+    $regionKey = hash_hmac('sha256', $region, $dateKey, true);
+    $serviceKey = hash_hmac('sha256', 's3', $regionKey, true);
+    $signingKey = hash_hmac('sha256', 'aws4_request', $serviceKey, true);
+    $signature = hash_hmac('sha256', $stringToSign, $signingKey);
+    $authorization = 'AWS4-HMAC-SHA256 Credential=' . $accessKey . '/' . $scope
+        . ', SignedHeaders=' . $signedHeaders . ', Signature=' . $signature;
+
+    $curl = curl_init($target['url']);
+    curl_setopt_array($curl, [
+        CURLOPT_UPLOAD => true,
+        CURLOPT_INFILE => $stream,
+        CURLOPT_INFILESIZE => filesize($file),
+        CURLOPT_RETURNTRANSFER => true,
+        CURLOPT_CONNECTTIMEOUT => 15,
+        CURLOPT_TIMEOUT => 120,
+        CURLOPT_FOLLOWLOCATION => false,
+        CURLOPT_PROTOCOLS => CURLPROTO_HTTP | CURLPROTO_HTTPS,
+        CURLOPT_HTTPHEADER => [
+            'Authorization: ' . $authorization,
+            'Content-Type: ' . $mime,
+            'Host: ' . $target['host'],
+            'x-amz-content-sha256: ' . $payloadHash,
+            'x-amz-date: ' . $amzDate,
+            'Expect:',
+        ],
+    ]);
+    $body = curl_exec($curl);
+    $status = (int)curl_getinfo($curl, CURLINFO_RESPONSE_CODE);
+    $error = curl_error($curl);
+    curl_close($curl);
+    fclose($stream);
+
+    if ($body === false) {
+        return [false, '', '连接 S3 失败：' . $error];
+    }
+    if ($status < 200 || $status >= 300) {
+        $message = 'S3 返回异常（HTTP ' . $status . '）。';
+        $xml = function_exists('simplexml_load_string')
+            ? @simplexml_load_string((string)$body, SimpleXMLElement::class, LIBXML_NONET)
+            : false;
+        if ($xml instanceof SimpleXMLElement && trim((string)($xml->Message ?? '')) !== '') {
+            $message .= ' ' . trim((string)$xml->Message);
+        }
+        return [false, '', $message];
+    }
+
+    return [true, (string)$target['public_url'], ''];
+}
+
 function handle_attachment_upload(): void
 {
     require_admin();
@@ -830,7 +1012,14 @@ function handle_attachment_upload(): void
         json_response(['ok' => false, 'error' => '没有收到附件。'], 400);
     }
 
-    [$year, $dir] = ensure_upload_year_dir();
+    $s3Settings = s3_settings();
+    $useS3 = (string)$s3Settings['s3_enabled'] === '1';
+    $keepLocal = !$useS3 || (string)$s3Settings['s3_keep_local'] === '1';
+    $year = date('Y');
+    $dir = '';
+    if ($keepLocal) {
+        [, $dir] = ensure_upload_year_dir();
+    }
     $maxSize = 30 * 1024 * 1024;
     $allowedTypes = [
         'jpg' => ['image/jpeg'], 'jpeg' => ['image/jpeg'], 'png' => ['image/png'],
@@ -880,14 +1069,25 @@ function handle_attachment_upload(): void
         $timestamp = str_replace('.', '', sprintf('%.6F', microtime(true)));
         $filename = $timestamp . '-' . bin2hex(random_bytes(3)) . '.' . $safeExtension;
         $target = $dir . '/' . $filename;
+        $isImage = @getimagesize($tmpName) !== false;
 
-        if (!move_uploaded_file($tmpName, $target)) {
+        if ($keepLocal && !move_uploaded_file($tmpName, $target)) {
             $failed[] = ['name' => $originalName, 'error' => '保存附件失败。'];
             continue;
         }
 
-        $isImage = @getimagesize($target) !== false;
-        $url = asset_url('uploads/' . $year . '/' . $filename);
+        if ($useS3) {
+            $prefix = trim((string)$s3Settings['s3_path_prefix'], '/');
+            $key = ($prefix !== '' ? $prefix . '/' : '') . $year . '/' . $filename;
+            [$s3Ok, $url, $s3Error] = upload_file_to_s3($keepLocal ? $target : $tmpName, $key, $mime, $s3Settings);
+            if (!$s3Ok) {
+                if ($keepLocal && is_file($target)) { @unlink($target); }
+                $failed[] = ['name' => $originalName, 'error' => $s3Error];
+                continue;
+            }
+        } else {
+            $url = asset_url('uploads/' . $year . '/' . $filename);
+        }
         $label = trim(pathinfo($originalName, PATHINFO_FILENAME)) ?: $filename;
         $markdown = $isImage ? '![' . $label . '](' . $url . ')' : '[' . $label . '](' . $url . ')';
 
@@ -1075,7 +1275,7 @@ function apply_pretty_route(): void
         return;
     }
 
-    if (preg_match('#^/admin/(posts|comments|categories|tags|links|users|ai|mail|settings)/?$#i', $path, $matches)) {
+    if (preg_match('#^/admin/(posts|comments|categories|tags|links|users|ai|mail|s3|settings)/?$#i', $path, $matches)) {
         set_route_params(['a' => 'admin_' . str_lower_u($matches[1])]);
         return;
     }
@@ -1179,6 +1379,7 @@ function url_for(string $route, array $params = []): string
         'admin_users' => $pretty ? app_path('/admin/users') : script_url() . '?a=admin_users',
         'admin_ai' => $pretty ? app_path('/admin/ai') : script_url() . '?a=admin_ai',
         'admin_mail' => $pretty ? app_path('/admin/mail') : script_url() . '?a=admin_mail',
+        'admin_s3' => $pretty ? app_path('/admin/s3') : script_url() . '?a=admin_s3',
         'admin_settings' => $pretty ? app_path('/admin/settings') : script_url() . '?a=admin_settings',
         'write' => $pretty ? app_path('/write') : script_url() . '?a=write',
         'edit' => $pretty ? app_path('/edit/' . (int)($params['id'] ?? 0)) : script_url() . '?a=edit&id=' . (int)($params['id'] ?? 0),
@@ -1186,6 +1387,7 @@ function url_for(string $route, array $params = []): string
         'save_settings' => script_url() . '?a=save_settings',
         'save_ai_settings' => script_url() . '?a=save_ai_settings',
         'save_mail_settings' => script_url() . '?a=save_mail_settings',
+        'save_s3_settings' => script_url() . '?a=save_s3_settings',
         'ai_generate' => script_url() . '?a=ai_generate',
         'save_category' => script_url() . '?a=save_category',
         'delete_category' => script_url() . '?a=delete_category',
@@ -2832,6 +3034,7 @@ function admin_icon(string $name): string
         'users' => '<path d="M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2"></path><circle cx="9" cy="7" r="4"></circle><path d="M22 21v-2a4 4 0 0 0-3-3.87"></path><path d="M16 3.13a4 4 0 0 1 0 7.75"></path>',
         'ai' => '<path d="m12 3-1.4 3.6L7 8l3.6 1.4L12 13l1.4-3.6L17 8l-3.6-1.4L12 3z"></path><path d="m5 14-.8 2.2L2 17l2.2.8L5 20l.8-2.2L8 17l-2.2-.8L5 14z"></path><path d="m19 13-1 2.5-2.5 1 2.5 1L19 20l1-2.5 2.5-1-2.5-1L19 13z"></path>',
         'mail' => '<path d="M4 4h16a2 2 0 0 1 2 2v12a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V6a2 2 0 0 1 2-2z"></path><path d="m22 6-10 7L2 6"></path>',
+        'storage' => '<ellipse cx="12" cy="5" rx="9" ry="3"></ellipse><path d="M3 5v6c0 1.7 4 3 9 3s9-1.3 9-3V5"></path><path d="M3 11v6c0 1.7 4 3 9 3s9-1.3 9-3v-6"></path>',
         'settings' => '<path d="M12 15.5A3.5 3.5 0 1 0 12 8a3.5 3.5 0 0 0 0 7.5z"></path><path d="M19.4 15a1.7 1.7 0 0 0 .3 1.9l.1.1a2 2 0 1 1-2.8 2.8l-.1-.1a1.7 1.7 0 0 0-1.9-.3 1.7 1.7 0 0 0-1 1.5V21a2 2 0 1 1-4 0v-.1a1.7 1.7 0 0 0-1-1.5 1.7 1.7 0 0 0-1.9.3l-.1.1A2 2 0 1 1 4.2 17l.1-.1a1.7 1.7 0 0 0 .3-1.9 1.7 1.7 0 0 0-1.5-1H3a2 2 0 1 1 0-4h.1a1.7 1.7 0 0 0 1.5-1 1.7 1.7 0 0 0-.3-1.9L4.2 7A2 2 0 1 1 7 4.2l.1.1a1.7 1.7 0 0 0 1.9.3h.1a1.7 1.7 0 0 0 1-1.5V3a2 2 0 1 1 4 0v.1a1.7 1.7 0 0 0 1 1.5h.1a1.7 1.7 0 0 0 1.9-.3l.1-.1A2 2 0 1 1 19.8 7l-.1.1a1.7 1.7 0 0 0-.3 1.9v.1a1.7 1.7 0 0 0 1.5 1h.1a2 2 0 1 1 0 4h-.1a1.7 1.7 0 0 0-1.5 1z"></path>',
         'logout' => '<path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4"></path><path d="M16 17l5-5-5-5"></path><path d="M21 12H9"></path>',
         default => '<circle cx="12" cy="12" r="8"></circle>',
@@ -2914,6 +3117,13 @@ function render_admin_sidebar(string $active, array $summary = []): string
             'note' => 'SMTP 设置',
             'href' => url_for('admin_mail'),
             'active' => $active === 'mail',
+        ],
+        [
+            'label' => 'S3 存储',
+            'icon' => 'storage',
+            'note' => '附件上传设置',
+            'href' => url_for('admin_s3'),
+            'active' => $active === 's3',
         ],
         [
             'label' => '站点设置',
@@ -4572,6 +4782,40 @@ function render_admin_mail_page(): void
     render_layout('邮件通知', (string)ob_get_clean(), ['active' => 'mail', 'wide' => true, 'description' => 'SMTP 邮件通知设置']);
 }
 
+function render_admin_s3_page(): void
+{
+    require_admin();
+    $settings = s3_settings();
+    $sidebar = render_admin_sidebar('s3');
+    ob_start(); ?>
+    <div class="admin-shell"><?= $sidebar ?><div class="admin-main"><?= render_admin_topbar('S3 存储') ?>
+      <section class="panel admin-list-panel"><div class="panel__header"><h2>S3 上传设置</h2><p class="panel__meta">启用后，新上传的附件将由 S3 接管；密钥不会写入配置缓存。</p></div><div class="panel__body">
+        <form class="form-stack" method="post" action="<?= h(url_for('save_s3_settings')) ?>"><?= csrf_field() ?>
+          <div class="settings-option-list">
+            <label class="setting-option"><input name="s3_enabled" type="checkbox" value="1"<?= $settings['s3_enabled'] === '1' ? ' checked' : '' ?>><span>启用 S3 上传</span></label>
+            <label class="setting-option"><input name="s3_keep_local" type="checkbox" value="1"<?= $settings['s3_keep_local'] === '1' ? ' checked' : '' ?>><span>在本地保留上传备份</span></label>
+            <label class="setting-option"><input name="s3_path_style" type="checkbox" value="1"<?= $settings['s3_path_style'] === '1' ? ' checked' : '' ?>><span>使用 Path-style 地址（MinIO 等兼容服务常用）</span></label>
+          </div>
+          <div class="field"><label for="s3_endpoint">Endpoint</label><input id="s3_endpoint" name="s3_endpoint" type="url" value="<?= h((string)$settings['s3_endpoint']) ?>" placeholder="https://s3.amazonaws.com" maxlength="500"><p class="field-hint">填写服务地址，不要包含 Bucket、查询参数或具体对象路径；生产环境建议使用 HTTPS。</p></div>
+          <div class="field-grid">
+            <div class="field"><label for="s3_region">Region</label><input id="s3_region" name="s3_region" value="<?= h((string)$settings['s3_region']) ?>" placeholder="us-east-1" maxlength="100"></div>
+            <div class="field"><label for="s3_bucket">Bucket</label><input id="s3_bucket" name="s3_bucket" value="<?= h((string)$settings['s3_bucket']) ?>" maxlength="255" autocomplete="off"></div>
+          </div>
+          <div class="field-grid">
+            <div class="field"><label for="s3_access_key">Access Key</label><input id="s3_access_key" name="s3_access_key" value="<?= h((string)$settings['s3_access_key']) ?>" maxlength="255" autocomplete="username"></div>
+            <div class="field"><label for="s3_secret_key">Secret Key</label><input id="s3_secret_key" name="s3_secret_key" type="password" value="" placeholder="<?= $settings['s3_secret_key'] !== '' ? '已保存，留空则不修改' : 'Secret Access Key' ?>" autocomplete="new-password"></div>
+          </div>
+          <div class="field-grid">
+            <div class="field"><label for="s3_path_prefix">对象路径前缀</label><input id="s3_path_prefix" name="s3_path_prefix" value="<?= h((string)$settings['s3_path_prefix']) ?>" placeholder="uploads" maxlength="500"><p class="field-hint">实际对象键会追加年份和随机文件名；可留空。</p></div>
+            <div class="field"><label for="s3_public_url">CDN 域名</label><input id="s3_public_url" name="s3_public_url" type="url" value="<?= h((string)$settings['s3_public_url']) ?>" placeholder="https://cdn.example.com" maxlength="500"><p class="field-hint">填写包含 http:// 或 https:// 的完整 CDN 地址；附件 URL 将使用此地址拼接对象键。留空时使用 S3 Endpoint。</p></div>
+          </div>
+          <div class="action-row"><button class="button">保存 S3 设置</button></div>
+        </form>
+      </div></section>
+    </div></div><?php
+    render_layout('S3 存储', (string)ob_get_clean(), ['active' => 's3', 'wide' => true, 'description' => 'S3 附件上传设置']);
+}
+
 function ai_completion(string $instruction, string $content): array
 {
     $aiSettings = ai_settings();
@@ -5242,6 +5486,10 @@ switch ($action) {
         render_admin_mail_page();
         break;
 
+    case 'admin_s3':
+        render_admin_s3_page();
+        break;
+
     case 'admin_settings':
         render_admin_settings_page();
         break;
@@ -5301,6 +5549,48 @@ switch ($action) {
         save_mail_settings($values);
         set_flash('success', '邮件通知设置已保存。');
         redirect_to(url_for('admin_mail'));
+        break;
+
+    case 'save_s3_settings':
+        require_admin_post(url_for('admin_s3'));
+        $current = s3_settings();
+        $enabled = isset($_POST['s3_enabled']) ? '1' : '0';
+        $endpoint = rtrim(trim((string)($_POST['s3_endpoint'] ?? '')), '/');
+        $region = trim((string)($_POST['s3_region'] ?? ''));
+        $bucket = trim((string)($_POST['s3_bucket'] ?? ''));
+        $accessKey = trim((string)($_POST['s3_access_key'] ?? ''));
+        $secretKey = trim((string)($_POST['s3_secret_key'] ?? ''));
+        $pathPrefix = trim(str_replace('\\', '/', (string)($_POST['s3_path_prefix'] ?? '')), '/');
+        $publicUrl = rtrim(trim((string)($_POST['s3_public_url'] ?? '')), '/');
+        $effectiveSecret = $secretKey !== '' ? $secretKey : (string)$current['s3_secret_key'];
+        $endpointValid = $endpoint !== '' && s3_endpoint_parts($endpoint) !== null;
+        $publicUrlValid = $publicUrl === '' || s3_endpoint_parts($publicUrl) !== null;
+        $prefixValid = !preg_match('/[\x00-\x1F\x7F]/', $pathPrefix)
+            && !preg_match('#(?:^|/)\.\.?(?:/|$)#', $pathPrefix);
+        $credentialsValid = !preg_match('/[\x00-\x1F\x7F]/', $region . $accessKey);
+        if ($enabled === '1' && (!$endpointValid || $region === '' || $bucket === '' || $accessKey === '' || $effectiveSecret === '' || !$credentialsValid || !function_exists('curl_init'))) {
+            set_flash('error', '启用 S3 时，请填写有效的 Endpoint、Region、Bucket 和访问密钥，并确认服务器已启用 cURL。');
+            redirect_to(url_for('admin_s3'));
+        }
+        if (($bucket !== '' && !preg_match('/^[A-Za-z0-9][A-Za-z0-9._-]{0,254}$/', $bucket)) || !$publicUrlValid || !$prefixValid) {
+            set_flash('error', 'Bucket、CDN 域名或对象路径前缀格式不正确。');
+            redirect_to(url_for('admin_s3'));
+        }
+        $values = [
+            's3_enabled' => $enabled,
+            's3_keep_local' => isset($_POST['s3_keep_local']) ? '1' : '0',
+            's3_endpoint' => str_sub_u($endpoint, 0, 500),
+            's3_region' => str_sub_u($region, 0, 100),
+            's3_bucket' => str_sub_u($bucket, 0, 255),
+            's3_access_key' => str_sub_u($accessKey, 0, 255),
+            's3_path_prefix' => str_sub_u($pathPrefix, 0, 500),
+            's3_public_url' => str_sub_u($publicUrl, 0, 500),
+            's3_path_style' => isset($_POST['s3_path_style']) ? '1' : '0',
+        ];
+        if ($secretKey !== '') { $values['s3_secret_key'] = $secretKey; }
+        save_s3_settings($values);
+        set_flash('success', 'S3 上传设置已保存。');
+        redirect_to(url_for('admin_s3'));
         break;
 
     case 'ai_generate':

@@ -60,6 +60,22 @@ function i_default_mail_settings(): array
     ];
 }
 
+function i_default_s3_settings(): array
+{
+    return [
+        's3_enabled' => '0',
+        's3_keep_local' => '1',
+        's3_endpoint' => 'https://s3.amazonaws.com',
+        's3_region' => 'us-east-1',
+        's3_bucket' => '',
+        's3_access_key' => '',
+        's3_secret_key' => '',
+        's3_path_prefix' => 'uploads',
+        's3_public_url' => '',
+        's3_path_style' => '0',
+    ];
+}
+
 function i_db_name(): string
 {
     if (is_file(INSTALL_LOCK_FILE) && is_file(INSTALL_DB_CONFIG_FILE)) {
@@ -108,7 +124,7 @@ function i_environment_checks(): array
         ['label' => 'PHP 8.0 或更高版本', 'ok' => version_compare(PHP_VERSION, '8.0.0', '>=')],
         ['label' => 'PDO 扩展', 'ok' => extension_loaded('pdo')],
         ['label' => 'PDO SQLite 驱动', 'ok' => extension_loaded('pdo_sqlite') && in_array('sqlite', PDO::getAvailableDrivers(), true)],
-        ['label' => 'cURL 扩展（AI 接口）', 'ok' => extension_loaded('curl')],
+        ['label' => 'cURL 扩展（AI 与 S3 接口）', 'ok' => extension_loaded('curl')],
         ['label' => 'JSON 扩展', 'ok' => extension_loaded('json')],
         ['label' => 'Fileinfo 扩展（安全识别上传文件）', 'ok' => extension_loaded('fileinfo')],
         ['label' => '安全随机数支持', 'ok' => function_exists('random_bytes')],
@@ -537,6 +553,12 @@ $db->exec(
     )'
 );
 $db->exec(
+    'CREATE TABLE IF NOT EXISTS s3_settings(
+        name TEXT PRIMARY KEY,
+        value TEXT NOT NULL DEFAULT \'\'
+    )'
+);
+$db->exec(
     'CREATE TABLE IF NOT EXISTS users(
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         username TEXT NOT NULL UNIQUE,
@@ -644,6 +666,11 @@ foreach (i_default_ai_settings() as $name => $value) {
 $mailStatement = $db->prepare('INSERT OR REPLACE INTO mail_settings(name, value) VALUES(?, ?)');
 foreach (i_default_mail_settings() as $name => $value) {
     $mailStatement->execute([$name, $value]);
+}
+
+$s3Statement = $db->prepare('INSERT OR REPLACE INTO s3_settings(name, value) VALUES(?, ?)');
+foreach (i_default_s3_settings() as $name => $value) {
+    $s3Statement->execute([$name, $value]);
 }
 
 $db->prepare('INSERT INTO users(username, password_hash, nickname, email, avatar_url, website_url, social_links, created_at) VALUES(?, ?, ?, ?, ?, ?, ?, ?)')

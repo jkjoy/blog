@@ -23,6 +23,7 @@
 - 站点基础设置
 - AI 辅助生成设置，独立保存 API 配置
 - SMTP 邮件通知设置，支持密码重置和新评论通知
+- S3 附件上传，支持自定义 Endpoint、CDN 地址和可选本地备份
 - 后台自动检查 GitHub Release 并一键更新程序
 - 可选伪静态 URL
 - 基础 Markdown 渲染
@@ -31,6 +32,8 @@
 
 - PHP 8.0+
 - `pdo_sqlite` 扩展
+- `fileinfo` 扩展
+- 使用 S3 上传时需要 `curl` 扩展
 - Apache / Nginx / Caddy / PHP 内置服务器
 
 ## 安装
@@ -51,6 +54,7 @@ index.js       前台交互
 .htaccess      Apache 重写和目录保护
 data/          SQLite、安装锁、配置
 cache/         设置缓存
+uploads/       本地上传文件及可选的 S3 备份
 ```
 
 ## 配置与缓存
@@ -59,8 +63,20 @@ cache/         设置缓存
 - `cache/settings.php` 是站点基础设置缓存，用于减少常规页面读取数据库。
 - `ai_settings` 表保存 AI 接口、模型、提示词和 API Key，不写入缓存文件。
 - `mail_settings` 表保存 SMTP 主机、账号、密码、发件人和通知收件人，不写入缓存文件。
+- `s3_settings` 表保存 S3 Endpoint、Bucket、访问密钥和上传选项，不写入缓存文件。
 - 后台保存站点基础设置会刷新 `cache/settings.php`。
-- 后台保存 AI 设置或邮件通知设置只更新对应独立数据表。
+- 后台保存 AI、邮件通知或 S3 设置只更新对应独立数据表。
+
+## S3 上传
+
+后台“S3 存储”中启用后：
+
+- 新附件会通过 AWS Signature V4 上传到 S3 或兼容服务。
+- 对象键格式为“路径前缀/年份/随机文件名”。
+- 可填写包含协议的完整 CDN 域名；附件 URL 会使用该域名拼接对象键，留空时使用 Endpoint 生成地址。
+- MinIO 等需要 Path-style 地址的服务可开启对应选项。
+- 开启“在本地保留上传备份”时，同一文件也会写入 `uploads/年份/`；关闭时不在站点目录落盘。
+- S3 上传失败时不会插入附件链接；启用本地备份时，本次失败产生的本地文件也会删除。
 
 ## 邮件通知
 
@@ -125,7 +141,7 @@ location ~ \.php$ {
 ## 注意
 
 - `data/` 和 `cache/` 不应该被公网直接访问
-- `ai_settings` 和 `mail_settings` 中包含后端密钥类配置，请只通过后台修改
+- `ai_settings`、`mail_settings` 和 `s3_settings` 中包含后端密钥类配置，请只通过后台修改
 - 如果要重装，先删除 `data/install.lock`
 - 更新程序后如涉及数据库结构变更，请先登录后台，再访问 `update.php` 执行升级
 - 一键更新会保留 `data/`、`cache/`、`uploads/`，并将被覆盖的程序文件备份到 `cache/update-backup-*`

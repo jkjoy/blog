@@ -99,6 +99,22 @@ function update_default_mail_settings(): array
     ];
 }
 
+function update_default_s3_settings(): array
+{
+    return [
+        's3_enabled' => '0',
+        's3_keep_local' => '1',
+        's3_endpoint' => 'https://s3.amazonaws.com',
+        's3_region' => 'us-east-1',
+        's3_bucket' => '',
+        's3_access_key' => '',
+        's3_secret_key' => '',
+        's3_path_prefix' => 'uploads',
+        's3_public_url' => '',
+        's3_path_style' => '0',
+    ];
+}
+
 function update_write_settings_cache(PDO $db): void
 {
     if (!is_dir(UPDATE_CACHE_DIR)) {
@@ -257,6 +273,21 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 $changes[] = '新增邮件通知设置表';
             }
 
+            $s3SettingsExist = (bool)$db->query("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 's3_settings' LIMIT 1")->fetchColumn();
+            $db->exec(
+                "CREATE TABLE IF NOT EXISTS s3_settings(
+                    name TEXT PRIMARY KEY,
+                    value TEXT NOT NULL DEFAULT ''
+                )"
+            );
+            $s3Statement = $db->prepare('INSERT OR IGNORE INTO s3_settings(name, value) VALUES(?, ?)');
+            foreach (update_default_s3_settings() as $name => $value) {
+                $s3Statement->execute([$name, $value]);
+            }
+            if (!$s3SettingsExist) {
+                $changes[] = '新增 S3 上传设置表';
+            }
+
             $db->commit();
             update_write_settings_cache($db);
             $message = $changes ? '数据库升级完成：' . implode('、', $changes) . '。' : '数据库已经是最新版本，无需变更。';
@@ -288,7 +319,7 @@ if (!isset($_SESSION['csrf_token']) || !is_string($_SESSION['csrf_token']) || $_
       <div class="panel__body">
         <?php if ($message !== ''): ?><div class="flash flash--success"><?= update_h($message) ?></div><?php endif; ?>
         <?php if ($error !== ''): ?><div class="flash flash--error"><?= update_h($error) ?></div><?php endif; ?>
-        <p>本次升级将补齐文章置顶字段、评论数据表、回复字段、登录用户关联字段、对应查询索引，将 AI 设置迁移到独立数据表，并新增邮件通知设置表。操作可重复执行，不会覆盖现有内容。</p>
+        <p>本次升级将补齐文章置顶字段、评论数据表、回复字段、登录用户关联字段、对应查询索引，将 AI 设置迁移到独立数据表，并新增邮件通知和 S3 上传设置表。操作可重复执行，不会覆盖现有内容。</p>
         <form method="post">
           <input type="hidden" name="csrf_token" value="<?= update_h((string)$_SESSION['csrf_token']) ?>">
           <div class="form-actions">
