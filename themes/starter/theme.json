@@ -1,0 +1,6 @@
+{
+  "name": "Starter Contrast",
+  "version": "1.0.0",
+  "author": "Simple PHP Blog",
+  "description": "演示样式覆盖、head action 与 body_class filter 的入门主题。"
+}

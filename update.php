@@ -74,6 +74,7 @@ function update_default_settings(): array
         'site_keywords' => '',
         'site_footer' => '',
         'custom_head_code' => '',
+        'active_theme' => 'default',
         'favicon_url' => 'logo.png',
         'footer_beian' => '',
         'posts_per_page' => '6',

@@ -13,10 +13,11 @@ session_set_cookie_params([
 ]);
 session_start();
 
-const APP_VERSION = 'v1.2.1';
+const APP_VERSION = 'v1.3.0';
 const DATA_DIR = __DIR__ . '/data';
 const CACHE_DIR = __DIR__ . '/cache';
 const UPLOAD_DIR = __DIR__ . '/uploads';
+const THEMES_DIR = __DIR__ . '/themes';
 const DB_CONFIG_FILE = DATA_DIR . '/config.php';
 const INSTALL_LOCK_FILE = DATA_DIR . '/install.lock';
 const SETTINGS_CACHE_FILE = CACHE_DIR . '/settings.php';
@@ -424,6 +425,7 @@ function default_settings(): array
         'site_keywords' => '',
         'site_footer' => '',
         'custom_head_code' => '',
+        'active_theme' => 'default',
         'favicon_url' => 'logo.png',
         'footer_beian' => '',
         'posts_per_page' => '6',
@@ -1345,6 +1347,193 @@ function install_url(): string
 function asset_url(string $path): string
 {
     return app_path('/' . ltrim($path, '/'));
+}
+
+function theme_manifest(string $slug): ?array
+{
+    if ($slug === 'default') {
+        return [
+            'slug' => 'default',
+            'name' => '内置终端主题',
+            'version' => APP_VERSION,
+            'author' => 'Simple PHP Blog',
+            'description' => '程序自带的终端风格前台主题。',
+        ];
+    }
+
+    if (!preg_match('/^[a-z0-9][a-z0-9_-]*$/', $slug)) {
+        return null;
+    }
+
+    $themesRoot = realpath(THEMES_DIR);
+    $themeDir = realpath(THEMES_DIR . '/' . $slug);
+    if ($themesRoot === false || $themeDir === false || !is_dir($themeDir)) {
+        return null;
+    }
+
+    $rootPrefix = rtrim($themesRoot, DIRECTORY_SEPARATOR) . DIRECTORY_SEPARATOR;
+    if (strncasecmp($themeDir . DIRECTORY_SEPARATOR, $rootPrefix, strlen($rootPrefix)) !== 0) {
+        return null;
+    }
+
+    $manifestFile = $themeDir . '/theme.json';
+    if (!is_file($manifestFile) || filesize($manifestFile) > 65536) {
+        return null;
+    }
+
+    $manifest = json_decode((string)file_get_contents($manifestFile), true);
+    $name = is_array($manifest) ? trim((string)($manifest['name'] ?? '')) : '';
+    if ($name === '') {
+        return null;
+    }
+
+    return [
+        'slug' => $slug,
+        'name' => str_sub_u($name, 0, 100),
+        'version' => str_sub_u(trim((string)($manifest['version'] ?? '')), 0, 40),
+        'author' => str_sub_u(trim((string)($manifest['author'] ?? '')), 0, 100),
+        'description' => str_sub_u(trim((string)($manifest['description'] ?? '')), 0, 300),
+    ];
+}
+
+function available_themes(): array
+{
+    $defaultTheme = theme_manifest('default');
+    $themes = [];
+
+    if (!is_dir(THEMES_DIR)) {
+        return ['default' => $defaultTheme];
+    }
+
+    foreach (scandir(THEMES_DIR) ?: [] as $entry) {
+        if ($entry === '.' || $entry === '..') {
+            continue;
+        }
+
+        $manifest = theme_manifest($entry);
+        if ($manifest !== null) {
+            $themes[$entry] = $manifest;
+        }
+    }
+
+    uasort($themes, static fn(array $left, array $right): int => strcasecmp((string)$left['name'], (string)$right['name']));
+    return ['default' => $defaultTheme] + $themes;
+}
+
+function active_theme_slug(): string
+{
+    $configured = trim(setting('active_theme', 'default'));
+    return theme_manifest($configured) !== null ? $configured : 'default';
+}
+
+function active_theme(): array
+{
+    return theme_manifest(active_theme_slug()) ?? theme_manifest('default');
+}
+
+function active_theme_file(string $filename): string
+{
+    $slug = active_theme_slug();
+    if ($slug === 'default' || !in_array($filename, ['functions.php', 'layout.php', 'style.css'], true)) {
+        return '';
+    }
+
+    $file = THEMES_DIR . '/' . $slug . '/' . $filename;
+    return is_file($file) ? $file : '';
+}
+
+function theme_asset_url(string $path): string
+{
+    $slug = active_theme_slug();
+    $path = trim(str_replace('\\', '/', $path), '/');
+    $segments = $path === '' ? [] : explode('/', $path);
+
+    if ($slug === 'default' || !$segments || array_filter($segments, static fn(string $segment): bool => $segment === '' || $segment === '.' || $segment === '..')) {
+        return '';
+    }
+
+    return asset_url('themes/' . rawurlencode($slug) . '/' . implode('/', array_map('rawurlencode', $segments)));
+}
+
+function add_theme_action(string $hook, callable $callback, int $priority = 10): void
+{
+    if (!preg_match('/^[a-z][a-z0-9_.-]*$/', $hook)) {
+        throw new InvalidArgumentException('无效的主题钩子名称：' . $hook);
+    }
+
+    $GLOBALS['sblog_theme_actions'][$hook][$priority][] = $callback;
+}
+
+function add_theme_filter(string $hook, callable $callback, int $priority = 10): void
+{
+    if (!preg_match('/^[a-z][a-z0-9_.-]*$/', $hook)) {
+        throw new InvalidArgumentException('无效的主题过滤器名称：' . $hook);
+    }
+
+    $GLOBALS['sblog_theme_filters'][$hook][$priority][] = $callback;
+}
+
+function theme_callbacks(string $type, string $hook): array
+{
+    $groups = $GLOBALS[$type][$hook] ?? [];
+    if (!is_array($groups)) {
+        return [];
+    }
+
+    ksort($groups, SORT_NUMERIC);
+    return array_merge(...array_values($groups));
+}
+
+function theme_action(string $hook, array $context = []): void
+{
+    foreach (theme_callbacks('sblog_theme_actions', $hook) as $callback) {
+        try {
+            $output = $callback($context);
+            if (is_string($output) || is_numeric($output)) {
+                echo $output;
+            }
+        } catch (Throwable $exception) {
+            error_log('Theme action ' . $hook . ' failed: ' . $exception->getMessage());
+        }
+    }
+}
+
+function theme_filter(string $hook, mixed $value, array $context = []): mixed
+{
+    foreach (theme_callbacks('sblog_theme_filters', $hook) as $callback) {
+        try {
+            $value = $callback($value, $context);
+        } catch (Throwable $exception) {
+            error_log('Theme filter ' . $hook . ' failed: ' . $exception->getMessage());
+        }
+    }
+
+    return $value;
+}
+
+function load_active_theme(): void
+{
+    static $loaded = false;
+    if ($loaded) {
+        return;
+    }
+
+    $loaded = true;
+    $functionsFile = active_theme_file('functions.php');
+    if ($functionsFile !== '') {
+        try {
+            require $functionsFile;
+        } catch (Throwable $exception) {
+            error_log('Theme bootstrap failed: ' . $exception->getMessage());
+        }
+    }
+
+    if (active_theme_file('style.css') !== '') {
+        add_theme_action('head', static function (array $context): string {
+            $styleUrl = (string)($context['style_url'] ?? '');
+            return $styleUrl !== '' ? '<link rel="stylesheet" href="' . h($styleUrl) . '">' . "\n" : '';
+        }, -1000);
+    }
 }
 
 function use_pretty_url(): bool
@@ -2904,12 +3093,59 @@ function render_layout(string $title, string $content, array $options = []): voi
     $status = (int)($options['status'] ?? 200);
     $bodyClass = $mode === 'public' ? 'theme-public' : 'theme-admin';
     $customHeadCode = $mode === 'public' ? trim(setting('custom_head_code')) : '';
+    $theme = theme_manifest('default');
+    $themeContext = [];
+    $themeStyleUrl = '';
 
     if ($mode !== 'public' && !$admin) {
         $bodyClass .= ' theme-admin--guest';
     }
 
+    if ($mode === 'public') {
+        load_active_theme();
+        $theme = active_theme();
+        $themeContext = [
+            'title' => $title,
+            'full_title' => $fullTitle,
+            'description' => $description,
+            'content' => $content,
+            'options' => $options,
+            'site_name' => $siteName,
+            'active' => $active,
+            'admin' => $admin,
+            'nav_pages' => $navPages,
+            'theme' => $theme,
+        ];
+        $fullTitle = (string)theme_filter('document_title', $fullTitle, $themeContext);
+        $description = (string)theme_filter('description', $description, $themeContext);
+        $bodyClass = trim((string)theme_filter('body_class', $bodyClass, $themeContext));
+        $content = (string)theme_filter('content', $content, $themeContext);
+        $themeStyleFile = active_theme_file('style.css');
+        $themeStyleUrl = $themeStyleFile !== '' ? theme_asset_url('style.css') . '?v=' . rawurlencode((string)filemtime($themeStyleFile)) : '';
+        $themeContext = array_merge($themeContext, [
+            'full_title' => $fullTitle,
+            'description' => $description,
+            'content' => $content,
+            'body_class' => $bodyClass,
+            'style_url' => $themeStyleUrl,
+            'flash' => $flash,
+        ]);
+    }
+
     http_response_code($status);
+
+    $themeLayout = $mode === 'public' ? active_theme_file('layout.php') : '';
+    if ($themeLayout !== '') {
+        ob_start();
+        try {
+            require $themeLayout;
+            echo (string)ob_get_clean();
+            exit;
+        } catch (Throwable $exception) {
+            ob_end_clean();
+            error_log('Theme layout failed: ' . $exception->getMessage());
+        }
+    }
     ?>
 <!doctype html>
 <html lang="zh-CN">
@@ -2927,12 +3163,16 @@ function render_layout(string $title, string $content, array $options = []): voi
   <?php if ($customHeadCode !== ''): ?>
 <?= $customHeadCode . "\n" ?>
   <?php endif; ?>
+  <?php if ($mode === 'public') { theme_action('head', $themeContext); } ?>
 </head>
 <body class="<?= h($bodyClass) ?>">
   <?php if ($mode === 'public'): ?>
+    <?php theme_action('body_open', $themeContext); ?>
     <div class="crt-turn-on" id="turn-on"></div><div class="crt-vignette"></div><div class="scanlines" id="scanlines"></div><div class="crt-flicker"></div>
     <div class="terminal" data-home="<?= h(url_for('home')) ?>" data-tags="<?= h(url_for('tags')) ?>" data-links="<?= h(url_for('links')) ?>" data-archives="<?= h(url_for('archives')) ?>">
+      <?php theme_action('header_before', $themeContext); ?>
       <header class="terminal-header"><div class="window-controls"><span class="dot red"></span><span class="dot yellow"></span><span class="dot green"></span></div><div class="title">visitor@<?= h($siteName) ?>: ~ — devlog-sh 0.9</div><div class="info"><span class="signal"></span><span id="term-info">80×24</span></div></header>
+      <?php theme_action('header_after', $themeContext); ?>
       <main class="output" id="output" aria-live="polite">
         <div class="boot-banner"><b><?= h($siteName) ?> <?= h(APP_VERSION) ?> — <?= h(public_quote()) ?></b><br><span>type "help" to begin · type "ls" to look around</span></div>
         <nav class="terminal-menu" aria-label="主菜单">
@@ -2957,8 +3197,11 @@ function render_layout(string $title, string $content, array $options = []): voi
         </nav>
         <div class="cmd-echo"><span class="prompt-part">visitor@<?= h($siteName) ?></span><span class="path-part">:~</span>$ cat <?= h(strtolower(str_replace(' ', '-', $title))) ?>.md</div>
         <?php if ($flash): ?><div class="line amber"><?= h((string)$flash['message']) ?></div><?php endif; ?>
+        <?php theme_action('content_before', $themeContext); ?>
         <section class="md-content"><?= $content ?></section>
+        <?php theme_action('content_after', $themeContext); ?>
         <div class="line dim">-- EOF --</div>
+        <?php theme_action('footer_before', $themeContext); ?>
         <footer class="terminal-footer">
           <span><?= h(site_footer_text()) ?></span>
           <?php $beian = trim(setting('footer_beian')); ?>
@@ -2971,6 +3214,7 @@ function render_layout(string $title, string $content, array $options = []): voi
           <span class="terminal-footer__separator">·</span>
           <a href="<?= h(url_for('sitemap')) ?>">Sitemap</a>
         </footer>
+        <?php theme_action('footer_after', $themeContext); ?>
       </main>
       <footer class="prompt-line"><span class="prompt"><span>visitor@<?= h($siteName) ?></span><span class="path" id="prompt-path">:~</span><span class="symbol">$</span>&nbsp;</span><span class="input-text" id="input-text"></span><span class="cursor"></span><span class="ghost-text" id="ghost-text"></span><input id="input" type="text" autofocus autocomplete="off" spellcheck="false" aria-label="Terminal input"></footer>
     </div>
@@ -3011,6 +3255,7 @@ function render_layout(string $title, string $content, array $options = []): voi
     </div>
   <?php endif; ?>
   <script src="<?= h(asset_url('index.js')) ?>?v=<?= h(APP_VERSION) ?>"></script>
+  <?php if ($mode === 'public') { theme_action('body_close', $themeContext); } ?>
 </body>
 </html>
 <?php
@@ -4846,6 +5091,9 @@ function render_admin_settings_page(): void
     require_admin();
 
     $siteName = setting('site_name', default_settings()['site_name']);
+    $themes = available_themes();
+    $activeThemeSlug = active_theme_slug();
+    $activeTheme = $themes[$activeThemeSlug] ?? $themes['default'];
     $sidebar = render_admin_sidebar('settings');
 
     ob_start();
@@ -4873,6 +5121,23 @@ function render_admin_settings_page(): void
                 <input id="site_url" name="site_url" type="url" value="<?= h(setting('site_url')) ?>" placeholder="https://example.com/blog">
                 <p class="field-hint">RSS 会优先使用这里的绝对地址，子目录部署时请带上完整路径。</p>
               </div>
+              <fieldset class="field settings-field">
+                <legend>前台主题</legend>
+                <div class="field">
+                  <label for="active_theme">当前主题</label>
+                  <select id="active_theme" name="active_theme">
+                    <?php foreach ($themes as $slug => $themeOption): ?>
+                      <option value="<?= h((string)$slug) ?>"<?= $slug === $activeThemeSlug ? ' selected' : '' ?>><?= h((string)$themeOption['name']) ?><?= $themeOption['version'] !== '' ? ' · ' . h((string)$themeOption['version']) : '' ?></option>
+                    <?php endforeach; ?>
+                  </select>
+                </div>
+                <div class="theme-summary">
+                  <strong><?= h((string)$activeTheme['name']) ?></strong>
+                  <?php if ($activeTheme['author'] !== ''): ?><span>作者：<?= h((string)$activeTheme['author']) ?></span><?php endif; ?>
+                  <p><?= h((string)$activeTheme['description']) ?></p>
+                </div>
+                <p class="field-hint">将自定义主题放入 <code>themes/主题目录</code>，刷新页面后即可选择。主题只影响前台页面。</p>
+              </fieldset>
               <div class="field"><label for="favicon_url">Favicon 地址</label><input id="favicon_url" name="favicon_url" value="<?= h(setting('favicon_url', 'logo.png')) ?>" placeholder="logo.png"><p class="field-hint">默认使用项目根目录的 logo.png，也可以填写完整图片 URL 或站内绝对路径。</p></div>
               <div class="field">
                 <label for="footer_beian">备案号</label>
@@ -5620,10 +5885,16 @@ switch ($action) {
     case 'save_settings':
         require_admin_post(url_for('admin_settings'));
         $siteName = trim((string)($_POST['site_name'] ?? ''));
+        $activeTheme = trim((string)($_POST['active_theme'] ?? 'default'));
+        if (!array_key_exists($activeTheme, available_themes())) {
+            set_flash('error', '所选主题不存在或 theme.json 无效。');
+            redirect_to(url_for('admin_settings'));
+        }
         $postsPerPage = max(1, min(24, (int)($_POST['posts_per_page'] ?? (int)default_settings()['posts_per_page'])));
         $prettyUrl = (string)($_POST['pretty_url'] ?? '0') === '1' ? '1' : '0';
         save_settings([
             'site_name' => $siteName !== '' ? $siteName : default_settings()['site_name'],
+            'active_theme' => $activeTheme,
             'site_url' => trim((string)($_POST['site_url'] ?? '')),
             'favicon_url' => trim((string)($_POST['favicon_url'] ?? '')) ?: default_settings()['favicon_url'],
             'footer_beian' => trim((string)($_POST['footer_beian'] ?? '')),

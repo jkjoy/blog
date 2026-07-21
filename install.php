@@ -23,6 +23,7 @@ function i_default_settings(): array
         'site_keywords' => '',
         'site_footer' => '',
         'custom_head_code' => '',
+        'active_theme' => 'default',
         'favicon_url' => 'logo.png',
         'footer_beian' => '',
         'comments_enabled' => '1',

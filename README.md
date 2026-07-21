@@ -21,6 +21,7 @@
 - 后台评论审核、未读通知与删除管理
 - 草稿、发布、定时发布
 - 站点基础设置
+- 可扩展前台主题、主题资源与 action/filter 钩子
 - AI 辅助生成设置，独立保存 API 配置
 - SMTP 邮件通知设置，支持密码重置和新评论通知
 - S3 附件上传，支持自定义 Endpoint、CDN 地址和可选本地备份
@@ -55,6 +56,7 @@ index.js       前台交互
 data/          SQLite、安装锁、配置
 cache/         设置缓存
 uploads/       本地上传文件及可选的 S3 备份
+themes/        自定义前台主题
 ```
 
 ## 配置与缓存
@@ -66,6 +68,14 @@ uploads/       本地上传文件及可选的 S3 备份
 - `s3_settings` 表保存 S3 Endpoint、Bucket、访问密钥和上传选项，不写入缓存文件。
 - 后台保存站点基础设置会刷新 `cache/settings.php`。
 - 后台保存 AI、邮件通知或 S3 设置只更新对应独立数据表。
+
+## 自定义主题
+
+- 每个主题放在 `themes/<主题目录>/`，并提供 `theme.json`。
+- 可通过 `style.css` 覆盖前台样式，通过 `functions.php` 注册 action/filter 钩子，也可用 `layout.php` 接管完整前台布局。
+- 后台“站点设置 -> 前台主题”负责启用主题；无效或被删除的主题会回退到内置主题。
+- 主题开发接口与完整钩子列表见 `themes/README.md`。
+- 一键更新只覆盖程序发布文件，不会清空额外的自定义主题目录。
 
 ## S3 上传
 
@@ -126,6 +136,7 @@ Apache 已可直接使用仓库里的 `.htaccess`。
 ```nginx
 location ^~ /data/ { deny all; }
 location ^~ /cache/ { deny all; }
+location ~* ^/themes/.+\.(?:php|json)$ { deny all; }
 
 location / {
     try_files $uri $uri/ /index.php?$query_string;

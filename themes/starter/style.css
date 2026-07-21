@@ -1,0 +1,28 @@
+.theme-public.theme-starter {
+  background: #080e14;
+}
+
+@scope (.theme-public.theme-starter) {
+  :scope {
+    --bg: #080e14;
+    --bg-alt: #101923;
+    --fg: #d8e2eb;
+    --green: #67d5c4;
+    --bright: #f2f7fa;
+    --dim: #56717c;
+    --amber: #f0b45c;
+    --blue: #7eb4e2;
+    --red: #e27d87;
+    --grey: #78909c;
+    --line: #263b46;
+    --glow: rgba(103, 213, 196, 0.3);
+  }
+
+  .terminal-header {
+    background: linear-gradient(180deg, #14212b, #0d171f);
+  }
+
+  .md-content {
+    border-left-color: var(--amber);
+  }
+}
