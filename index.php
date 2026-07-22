@@ -13,7 +13,7 @@ session_set_cookie_params([
 ]);
 session_start();
 
-const APP_VERSION = 'v1.3.1';
+const APP_VERSION = 'v1.3.2';
 const DATA_DIR = __DIR__ . '/data';
 const CACHE_DIR = __DIR__ . '/cache';
 const UPLOAD_DIR = __DIR__ . '/uploads';
@@ -23,6 +23,7 @@ const INSTALL_LOCK_FILE = DATA_DIR . '/install.lock';
 const SETTINGS_CACHE_FILE = CACHE_DIR . '/settings.php';
 const UPDATE_REPOSITORY = 'jkjoy/Simple-PHP-Blog';
 const UPDATE_CACHE_FILE = CACHE_DIR . '/github-update.json';
+const BUNDLED_THEME_FILES = ['themes/starter/theme.json', 'themes/ying/theme.json'];
 
 function db_file_path(): string
 {
@@ -651,6 +652,14 @@ function update_available_for(string $latest, string $current = APP_VERSION): bo
     return $latest !== $current && version_compare($latest, $current, '>');
 }
 
+function bundled_theme_files_missing(): bool
+{
+    foreach (BUNDLED_THEME_FILES as $file) {
+        if (!is_file(__DIR__ . '/' . $file)) { return true; }
+    }
+    return false;
+}
+
 function github_update_info(bool $refresh = false): array
 {
     ensure_runtime_dirs();
@@ -659,10 +668,13 @@ function github_update_info(bool $refresh = false): array
         if (is_array($cached)) {
             $cached['current'] = APP_VERSION;
             $cached['available'] = update_available_for((string)($cached['latest'] ?? ''));
+            $cached['repair'] = !$cached['available']
+                && normalize_version((string)($cached['latest'] ?? '')) === normalize_version(APP_VERSION)
+                && bundled_theme_files_missing();
             return $cached;
         }
     }
-    $result = ['available' => false, 'current' => APP_VERSION, 'latest' => '', 'download_url' => '', 'error' => ''];
+    $result = ['available' => false, 'repair' => false, 'current' => APP_VERSION, 'latest' => '', 'download_url' => '', 'error' => ''];
     if (!function_exists('curl_init')) {
         $result['error'] = '服务器未启用 cURL，无法检查更新。';
         return $result;
@@ -683,15 +695,76 @@ function github_update_info(bool $refresh = false): array
             $result['latest'] = $latest;
             $result['download_url'] = $download;
             $result['available'] = update_available_for($latest);
+            $result['repair'] = !$result['available']
+                && normalize_version($latest) === normalize_version(APP_VERSION)
+                && bundled_theme_files_missing();
         }
     }
     file_put_contents(UPDATE_CACHE_FILE, json_encode($result, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES), LOCK_EX);
     return $result;
 }
 
+function install_release_files(string $source, string $targetRoot, string $backup): void
+{
+    $files = ['index.php', 'index.css', 'index.js', 'install.php', 'update.php', 'README.md', 'logo.png', '.htaccess'];
+    $themeRoot = $source . '/themes';
+    if (is_dir($themeRoot)) {
+        $iterator = new RecursiveIteratorIterator(new RecursiveDirectoryIterator($themeRoot, FilesystemIterator::SKIP_DOTS));
+        foreach ($iterator as $item) {
+            if ($item->isFile()) {
+                $relative = substr($item->getPathname(), strlen($themeRoot) + 1);
+                $files[] = 'themes/' . str_replace('\\', '/', $relative);
+            }
+        }
+    }
+
+    $targetRoot = rtrim($targetRoot, '/\\');
+    $replaced = [];
+    $created = [];
+    $createdDirectories = [];
+    try {
+        foreach ($files as $file) {
+            $from = $source . '/' . $file;
+            if (!is_file($from)) { continue; }
+            $target = $targetRoot . '/' . $file;
+            $targetDirectory = dirname($target);
+            if (!is_dir($targetDirectory)) {
+                if (!mkdir($targetDirectory, 0755, true) && !is_dir($targetDirectory)) { throw new RuntimeException('无法创建目录 ' . $file); }
+                $createdDirectories[] = $targetDirectory;
+            }
+            if (is_file($target)) {
+                $saved = $backup . '/' . $file;
+                $savedDirectory = dirname($saved);
+                if (!is_dir($savedDirectory) && !mkdir($savedDirectory, 0755, true) && !is_dir($savedDirectory)) { throw new RuntimeException('无法创建备份目录 ' . $file); }
+                if (!copy($target, $saved)) { throw new RuntimeException('无法备份 ' . $file); }
+                $replaced[] = $file;
+            } elseif (file_exists($target)) {
+                throw new RuntimeException('更新目标不是文件：' . $file);
+            } else {
+                $created[] = $file;
+            }
+            if (!copy($from, $target)) { throw new RuntimeException('无法覆盖 ' . $file); }
+        }
+    } catch (Throwable $exception) {
+        foreach (array_reverse($created) as $file) { @unlink($targetRoot . '/' . $file); }
+        foreach (array_reverse($replaced) as $file) {
+            $saved = $backup . '/' . $file;
+            if (is_file($saved)) { copy($saved, $targetRoot . '/' . $file); }
+        }
+        foreach (array_reverse(array_unique($createdDirectories)) as $directory) {
+            $current = $directory;
+            while ($current !== $targetRoot && str_starts_with($current, $targetRoot) && is_dir($current) && @rmdir($current)) {
+                $current = dirname($current);
+            }
+        }
+        throw $exception;
+    }
+}
+
 function install_github_update(array $update): string
 {
-    if (empty($update['available']) || !filter_var((string)($update['download_url'] ?? ''), FILTER_VALIDATE_URL)) { throw new RuntimeException('当前没有可安装的更新。'); }
+    $isRepair = !empty($update['repair']);
+    if ((empty($update['available']) && !$isRepair) || !filter_var((string)($update['download_url'] ?? ''), FILTER_VALIDATE_URL)) { throw new RuntimeException('当前没有可安装的更新。'); }
     if (!class_exists('ZipArchive')) { throw new RuntimeException('服务器未启用 ZipArchive，无法解压更新包。'); }
     ensure_runtime_dirs();
     $workDir = CACHE_DIR . '/update-' . bin2hex(random_bytes(6));
@@ -716,26 +789,17 @@ function install_github_update(array $update): string
         $newIndex = $source . '/index.php';
         if (!is_file($newIndex)) { throw new RuntimeException('更新包结构无效。'); }
         $code = (string)file_get_contents($newIndex);
-        if (!preg_match("/const APP_VERSION = '([^']+)'/", $code, $match) || !update_available_for((string)$match[1])) { throw new RuntimeException('更新包版本无效或不高于当前版本。'); }
-        $files = ['index.php', 'index.css', 'index.js', 'install.php', 'update.php', 'README.md', 'logo.png', '.htaccess'];
+        if (!preg_match("/const APP_VERSION = '([^']+)'/", $code, $match)) { throw new RuntimeException('更新包版本无效。'); }
+        $packageVersion = (string)$match[1];
+        $versionIsValid = $isRepair
+            ? normalize_version($packageVersion) === normalize_version(APP_VERSION)
+            : update_available_for($packageVersion);
+        if (!$versionIsValid) { throw new RuntimeException('更新包版本无效或不高于当前版本。'); }
         $backup = CACHE_DIR . '/update-backup-' . date('Ymd-His');
         mkdir($backup, 0755, true);
-        $replaced = [];
-        try {
-            foreach ($files as $file) {
-                $from = $source . '/' . $file;
-                if (!is_file($from)) { continue; }
-                $target = __DIR__ . '/' . $file;
-                if (is_file($target) && !copy($target, $backup . '/' . str_replace('/', '_', $file))) { throw new RuntimeException('无法备份 ' . $file); }
-                if (!copy($from, $target)) { throw new RuntimeException('无法覆盖 ' . $file); }
-                $replaced[] = $file;
-            }
-        } catch (Throwable $exception) {
-            foreach ($replaced as $file) { $saved = $backup . '/' . str_replace('/', '_', $file); if (is_file($saved)) { copy($saved, __DIR__ . '/' . $file); } }
-            throw $exception;
-        }
+        install_release_files($source, __DIR__, $backup);
         @unlink(UPDATE_CACHE_FILE);
-        return (string)$match[1];
+        return $packageVersion;
     } finally {
         $items = is_dir($workDir) ? new RecursiveIteratorIterator(new RecursiveDirectoryIterator($workDir, FilesystemIterator::SKIP_DOTS), RecursiveIteratorIterator::CHILD_FIRST) : [];
         foreach ($items as $item) { $item->isDir() ? @rmdir($item->getPathname()) : @unlink($item->getPathname()); }
@@ -4315,12 +4379,12 @@ function render_admin_page(): void
         <?= render_admin_topbar('博客数据预览') ?>
 
         <div class="admin-grid">
-          <?php if (!empty($update['available'])): ?>
+          <?php if (!empty($update['available']) || !empty($update['repair'])): ?>
             <section class="panel update-notice admin-animate">
               <div class="panel__body">
-                <div><strong>发现新版本 <?= h((string)$update['latest']) ?></strong><p>当前版本 <?= h(APP_VERSION) ?>。更新会自动备份并覆盖程序文件，站点数据和上传文件不受影响。</p></div>
-                <form method="post" action="<?= h(url_for('install_update')) ?>" onsubmit="return confirm('确定更新到 <?= h((string)$update['latest']) ?> 吗？更新期间请勿关闭页面。');">
-                  <?= csrf_field() ?><button class="button button--primary" type="submit">立即更新</button>
+                <div><strong><?= !empty($update['repair']) ? '发布主题需要补全' : '发现新版本 ' . h((string)$update['latest']) ?></strong><p><?= !empty($update['repair']) ? '当前程序版本完整，但发布包中的内置主题尚未同步。' : '当前版本 ' . h(APP_VERSION) . '。更新会自动备份并覆盖程序与内置主题文件，站点数据、上传文件和其他自定义主题不受影响。' ?></p></div>
+                <form method="post" action="<?= h(url_for('install_update')) ?>" onsubmit="return confirm('<?= !empty($update['repair']) ? '确定从当前发布包补全内置主题吗？' : '确定更新到 ' . h((string)$update['latest']) . ' 吗？更新期间请勿关闭页面。' ?>');">
+                  <?= csrf_field() ?><button class="button button--primary" type="submit"><?= !empty($update['repair']) ? '同步主题' : '立即更新' ?></button>
                 </form>
               </div>
             </section>
@@ -5705,14 +5769,33 @@ switch ($action) {
         break;
 
     case 'admin':
+        $flash = $_SESSION['flash'] ?? null;
+        $justUpdated = is_array($flash)
+            && (string)($flash['type'] ?? '') === 'success'
+            && str_starts_with((string)($flash['message'] ?? ''), '已更新到 ');
+        if (is_admin() && $justUpdated && bundled_theme_files_missing()) {
+            try {
+                $update = github_update_info(true);
+                if (!empty($update['repair'])) {
+                    $version = install_github_update($update);
+                    set_flash('success', '已更新到 ' . $version . '，并已同步发布主题。');
+                } elseif ((string)($update['error'] ?? '') !== '') {
+                    throw new RuntimeException((string)$update['error']);
+                }
+            } catch (Throwable $exception) {
+                set_flash('error', '程序已更新，但发布主题同步失败：' . $exception->getMessage());
+            }
+        }
         render_admin_page();
         break;
 
     case 'install_update':
         require_admin_post(url_for('admin'));
         try {
-            $version = install_github_update(github_update_info(true));
-            set_flash('success', '已更新到 ' . $version . '。如版本包含数据库变更，请继续访问 update.php。');
+            $update = github_update_info(true);
+            $isRepair = !empty($update['repair']);
+            $version = install_github_update($update);
+            set_flash('success', $isRepair ? '发布主题已同步。' : '已更新到 ' . $version . '。如版本包含数据库变更，请继续访问 update.php。');
         } catch (Throwable $exception) {
             set_flash('error', '更新失败：' . $exception->getMessage());
         }

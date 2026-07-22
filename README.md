@@ -155,4 +155,4 @@ location ~ \.php$ {
 - `ai_settings`、`mail_settings` 和 `s3_settings` 中包含后端密钥类配置，请只通过后台修改
 - 如果要重装，先删除 `data/install.lock`
 - 更新程序后如涉及数据库结构变更，请先登录后台，再访问 `update.php` 执行升级
-- 一键更新会保留 `data/`、`cache/`、`uploads/`，并将被覆盖的程序文件备份到 `cache/update-backup-*`
+- 一键更新会保留 `data/`、`cache/`、`uploads/` 和用户自建主题，递归合并发布包中的 `themes/`，并将被覆盖的程序与主题文件备份到 `cache/update-backup-*`
