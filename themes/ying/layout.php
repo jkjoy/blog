@@ -29,11 +29,12 @@ $accountLabel = $admin ? '管理后台' : '登录';
 $keywords = trim(setting('site_keywords'));
 $customHeadCode = trim(setting('custom_head_code'));
 $themeVersion = (string)($theme['version'] ?? '1.0.0');
-$viewClass = $active === 'home' && $title === $siteName ? 'ying-view-home'
+$viewClass = (string)($_GET['a'] ?? '') === 'category' ? 'ying-view-category'
+    : ($active === 'home' && $title === $siteName ? 'ying-view-home'
     : ($active === 'archives' ? 'ying-view-archives'
     : ($active === 'tags' ? 'ying-view-tags'
     : ($active === 'links' ? 'ying-view-links'
-    : (str_starts_with($active, 'page:') ? 'ying-view-page' : 'ying-view-post'))));
+    : (str_starts_with($active, 'page:') ? 'ying-view-page' : 'ying-view-post')))));
 ?>
 <!doctype html>
 <html lang="zh-CN">

@@ -155,6 +155,106 @@
   text-decoration: underline;
 }
 
+.ying-theme .category-header {
+  margin-bottom: 18px;
+}
+
+.ying-theme .category-title {
+  margin: 0;
+  font-size: 22px;
+  font-weight: 400;
+  line-height: 1.4;
+  text-wrap: balance;
+}
+
+.ying-theme .category-summary {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 3px 7px;
+  margin: 14px 0 0;
+  color: #a1a1aa;
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
+  text-wrap: pretty;
+}
+
+.ying-theme .category-summary strong {
+  color: #71717a;
+  font-weight: 600;
+}
+
+.dark .ying-theme .category-summary strong {
+  color: #d4d4d8;
+}
+
+.ying-theme .category-summary__divider {
+  color: #d4d4d8;
+}
+
+.ying-theme .category-posts {
+  display: grid;
+  margin: 0;
+  padding: 0;
+  border-top: 1px solid #f4f4f5;
+  list-style: none;
+}
+
+.ying-theme .category-post {
+  display: grid;
+  min-width: 0;
+  min-height: 44px;
+  grid-template-columns: 82px minmax(0, 1fr);
+  align-items: center;
+  gap: 10px;
+  margin: 0;
+  border-bottom: 1px solid #f4f4f5;
+  list-style: none;
+}
+
+.dark .ying-theme .category-posts,
+.dark .ying-theme .category-post {
+  border-color: #3f3f46;
+}
+
+.ying-theme .category-post__date {
+  display: inline-flex;
+  width: 82px;
+  min-height: 22px;
+  align-items: center;
+  justify-content: center;
+  margin: 0;
+  padding: 3px 5px;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
+.ying-theme .category-post__link {
+  display: flex;
+  min-width: 0;
+  min-height: 44px;
+  align-items: center;
+  gap: 4px;
+  color: inherit;
+  line-height: 1.45;
+  overflow-wrap: anywhere;
+  text-wrap: pretty;
+  transition-property: color;
+  transition-duration: 150ms;
+  transition-timing-function: ease-out;
+}
+
+.ying-theme .category-post__link:hover,
+.ying-theme .category-post__link:focus-visible {
+  color: #2196f3;
+  text-decoration: underline;
+  text-underline-offset: 3px;
+}
+
+.ying-theme .category-post__pinned {
+  flex: 0 0 auto;
+  color: #ef4444;
+}
+
 .ying-theme .post-content {
   min-width: 0;
   overflow-wrap: anywhere;
@@ -604,6 +704,16 @@
   .ying-theme .friend-links,
   .ying-theme .comment-form__grid {
     grid-template-columns: 1fr;
+  }
+
+  .ying-theme .category-post {
+    grid-template-columns: 74px minmax(0, 1fr);
+    gap: 8px;
+  }
+
+  .ying-theme .category-post__date {
+    width: 74px;
+    font-size: 11px;
   }
 
   .ying-theme .comment-item--reply {

@@ -89,6 +89,50 @@ function ying_render_archives_content(): string
     return (string)ob_get_clean();
 }
 
+function ying_render_category_content(string $slug): string
+{
+    $category = one('SELECT * FROM categories WHERE slug = ?', [trim($slug)]);
+    if (!$category) { return ''; }
+    $posts = all_rows(
+        'SELECT * FROM posts WHERE kind = ? AND category_id = ? AND status = ? AND published_at <= ? ORDER BY is_pinned DESC, published_at DESC, id DESC',
+        ['post', (int)$category['id'], 'published', time()]
+    );
+    $description = trim((string)$category['description']);
+
+    ob_start();
+    ?>
+    <div class="category-content">
+      <article>
+        <header class="category-header">
+          <h1 class="item-a category-title">分类：<?= h((string)$category['name']) ?></h1>
+          <p class="category-summary">
+            <span>共有 <strong><?= h((string)count($posts)) ?></strong> 篇文章</span>
+            <?php if ($description !== ''): ?><span class="category-summary__divider" aria-hidden="true">·</span><span><?= h($description) ?></span><?php endif; ?>
+          </p>
+        </header>
+
+        <?php if ($posts): ?>
+          <ol class="category-posts">
+            <?php foreach ($posts as $index => $post): ?>
+              <?php $publishedAt = (int)$post['published_at']; ?>
+              <li class="category-post post-card" style="--delay:<?= h((string)(min($index, 8) * 0.04)) ?>s">
+                <time class="archives-li category-post__date" datetime="<?= h(date('Y-m-d', $publishedAt)) ?>"><?= h(date('Y/m/d', $publishedAt)) ?></time>
+                <a class="category-post__link" href="<?= h(url_for('post', ['slug' => (string)$post['slug']])) ?>">
+                  <?php if (!empty($post['is_pinned'])): ?><span class="category-post__pinned">[置顶]</span><?php endif; ?>
+                  <span><?= h((string)$post['title']) ?></span>
+                </a>
+              </li>
+            <?php endforeach; ?>
+          </ol>
+        <?php else: ?>
+          <div class="empty-notice"><p>这个分类下还没有已发布文章。</p></div>
+        <?php endif; ?>
+      </article>
+    </div>
+    <?php
+    return (string)ob_get_clean();
+}
+
 function ying_render_links_content(): string
 {
     $links = all_rows('SELECT * FROM links ORDER BY sort_order ASC, id DESC');
@@ -129,6 +173,10 @@ add_theme_filter('body_class', static function (string $classes, array $context)
 
 add_theme_filter('content', static function (string $content, array $context): string {
     $active = (string)($context['active'] ?? '');
+    if ($active === 'home' && (string)($_GET['a'] ?? '') === 'category') {
+        $categoryContent = ying_render_category_content((string)($_GET['slug'] ?? ''));
+        return $categoryContent !== '' ? $categoryContent : $content;
+    }
     if ($active === 'home' && (string)($context['title'] ?? '') === (string)($context['site_name'] ?? '')) {
         return ying_render_home_content();
     }
