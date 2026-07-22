@@ -289,6 +289,21 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 $changes[] = '新增 S3 上传设置表';
             }
 
+            $socialFieldsChanged = false;
+            foreach (['qq_url', 'wechat_url', 'weibo_url', 'x_url', 'telegram_url', 'bilibili_url', 'instagram_url', 'tiktok_url'] as $column) {
+                if (!update_has_column($db, 'users', $column)) {
+                    $db->exec("ALTER TABLE users ADD COLUMN {$column} TEXT NOT NULL DEFAULT ''");
+                    $socialFieldsChanged = true;
+                }
+            }
+            if (update_has_column($db, 'users', 'social_links')) {
+                $db->exec('ALTER TABLE users DROP COLUMN social_links');
+                $socialFieldsChanged = true;
+            }
+            if ($socialFieldsChanged) {
+                $changes[] = '更新用户社交平台字段';
+            }
+
             $db->commit();
             update_write_settings_cache($db);
             $message = $changes ? '数据库升级完成：' . implode('、', $changes) . '。' : '数据库已经是最新版本，无需变更。';
@@ -320,7 +335,7 @@ if (!isset($_SESSION['csrf_token']) || !is_string($_SESSION['csrf_token']) || $_
       <div class="panel__body">
         <?php if ($message !== ''): ?><div class="flash flash--success"><?= update_h($message) ?></div><?php endif; ?>
         <?php if ($error !== ''): ?><div class="flash flash--error"><?= update_h($error) ?></div><?php endif; ?>
-        <p>本次升级将补齐文章置顶字段、评论数据表、回复字段、登录用户关联字段、对应查询索引，将 AI 设置迁移到独立数据表，并新增邮件通知和 S3 上传设置表。操作可重复执行，不会覆盖现有内容。</p>
+        <p>本次升级将补齐文章置顶、评论、通知、存储和用户社交平台所需的数据结构。操作可重复执行，不会覆盖文章内容。</p>
         <form method="post">
           <input type="hidden" name="csrf_token" value="<?= update_h((string)$_SESSION['csrf_token']) ?>">
           <div class="form-actions">

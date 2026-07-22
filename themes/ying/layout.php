@@ -2,7 +2,7 @@
 
 declare(strict_types=1);
 
-$owner = one('SELECT nickname, username, avatar_url, website_url, social_links, signature FROM users ORDER BY id ASC LIMIT 1') ?? [];
+$owner = one('SELECT nickname, username, avatar_url, website_url, qq_url, wechat_url, weibo_url, x_url, telegram_url, bilibili_url, instagram_url, tiktok_url, signature FROM users ORDER BY id ASC LIMIT 1') ?? [];
 $ownerName = trim((string)($owner['nickname'] ?? '')) ?: trim((string)($owner['username'] ?? '')) ?: $siteName;
 $signature = trim((string)($owner['signature'] ?? '')) ?: trim(setting('site_tagline'));
 $avatarUrl = theme_logo_url();
@@ -12,16 +12,11 @@ $websiteUrl = safe_link_url((string)($owner['website_url'] ?? ''));
 if ($websiteUrl !== '#') {
     $socialLinks[] = ['url' => $websiteUrl, 'label' => '个人主页', 'icon' => 'ri-home-heart-line'];
 }
-foreach (preg_split('/\R+/', trim((string)($owner['social_links'] ?? ''))) ?: [] as $socialUrl) {
-    $safeUrl = safe_link_url(trim($socialUrl));
-    if ($safeUrl === '#') {
-        continue;
+foreach (social_profile_definitions() as $definition) {
+    $safeUrl = safe_link_url((string)($owner[$definition['column']] ?? ''));
+    if ($safeUrl !== '#') {
+        $socialLinks[] = ['url' => $safeUrl, 'label' => (string)$definition['label'], 'icon' => (string)$definition['icon']];
     }
-    $host = str_lower_u((string)parse_url($safeUrl, PHP_URL_HOST));
-    $icon = str_contains($host, 'github') ? 'ri-github-fill'
-        : (str_contains($host, 'bilibili') ? 'ri-bilibili-fill'
-        : (str_contains($host, 'telegram') ? 'ri-telegram-fill' : 'ri-links-line'));
-    $socialLinks[] = ['url' => $safeUrl, 'label' => preg_replace('/^www\./i', '', $host) ?: '社交链接', 'icon' => $icon];
 }
 
 $accountUrl = $admin ? url_for('admin') : url_for('login');
@@ -63,10 +58,10 @@ $viewClass = (string)($_GET['a'] ?? '') === 'category' ? 'ying-view-category'
     <?php theme_action('header_before', $themeContext); ?>
     <div class="ying-header">
       <img class="rounded-lg ying-avatar" src="<?= h($avatarUrl) ?>" width="80" height="80" alt="<?= h($ownerName) ?>" decoding="async" fetchpriority="high" onerror="this.onerror=null;this.src='<?= h(theme_logo_url()) ?>'">
-      <div class="flex justify-between my-4 items-center">
+      <div class="ying-profile-row flex justify-between my-4 items-center">
         <h2 class="!text-sm"><span><?= h($signature) ?></span></h2>
         <nav aria-label="个人链接">
-          <ul class="flex space-x-2">
+          <ul class="ying-social-list flex">
             <?php foreach ($socialLinks as $social): ?>
               <li><a href="<?= h((string)$social['url']) ?>" target="_blank" rel="me noopener noreferrer" aria-label="<?= h((string)$social['label']) ?>" title="<?= h((string)$social['label']) ?>"><i class="<?= h((string)$social['icon']) ?>" aria-hidden="true"></i></a></li>
             <?php endforeach; ?>

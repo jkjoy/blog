@@ -568,7 +568,14 @@ $db->exec(
         email TEXT NOT NULL DEFAULT \'\',
         avatar_url TEXT NOT NULL DEFAULT \'\',
         website_url TEXT NOT NULL DEFAULT \'\',
-        social_links TEXT NOT NULL DEFAULT \'\',
+        qq_url TEXT NOT NULL DEFAULT \'\',
+        wechat_url TEXT NOT NULL DEFAULT \'\',
+        weibo_url TEXT NOT NULL DEFAULT \'\',
+        x_url TEXT NOT NULL DEFAULT \'\',
+        telegram_url TEXT NOT NULL DEFAULT \'\',
+        bilibili_url TEXT NOT NULL DEFAULT \'\',
+        instagram_url TEXT NOT NULL DEFAULT \'\',
+        tiktok_url TEXT NOT NULL DEFAULT \'\',
         signature TEXT NOT NULL DEFAULT \'\',
         created_at INTEGER NOT NULL
     )'
@@ -674,8 +681,8 @@ foreach (i_default_s3_settings() as $name => $value) {
     $s3Statement->execute([$name, $value]);
 }
 
-$db->prepare('INSERT INTO users(username, password_hash, nickname, email, avatar_url, website_url, social_links, created_at) VALUES(?, ?, ?, ?, ?, ?, ?, ?)')
-    ->execute([$form['admin_username'], password_hash($password, PASSWORD_DEFAULT), $form['author_name'], $form['admin_email'], '', '', '', $now]);
+$db->prepare('INSERT INTO users(username, password_hash, nickname, email, avatar_url, website_url, created_at) VALUES(?, ?, ?, ?, ?, ?, ?)')
+    ->execute([$form['admin_username'], password_hash($password, PASSWORD_DEFAULT), $form['author_name'], $form['admin_email'], '', '', $now]);
 $defaultAuthorId = (int)$db->lastInsertId();
 
 $db->prepare('INSERT INTO categories(name, slug, description, sort_order, created_at, updated_at) VALUES(?, ?, ?, ?, ?, ?)')

@@ -29,6 +29,45 @@
   object-fit: cover;
 }
 
+.ying-profile-row {
+  flex-wrap: wrap;
+  align-items: flex-start;
+  gap: 8px 16px;
+}
+
+.ying-profile-row > h2 {
+  flex: 1 1 150px;
+  min-width: 0;
+  text-wrap: pretty;
+}
+
+.ying-profile-row > nav {
+  max-width: 100%;
+  margin-left: auto;
+}
+
+.ying-social-list {
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: flex-end;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.ying-social-list li {
+  margin: 0;
+  list-style: none;
+}
+
+.ying-social-list a {
+  display: inline-flex;
+  width: 40px;
+  height: 40px;
+  align-items: center;
+  justify-content: center;
+}
+
 .ying-header a,
 .ying-header button,
 .footer a {

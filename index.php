@@ -13,7 +13,7 @@ session_set_cookie_params([
 ]);
 session_start();
 
-const APP_VERSION = 'v1.3.3';
+const APP_VERSION = 'v1.3.4';
 const DATA_DIR = __DIR__ . '/data';
 const CACHE_DIR = __DIR__ . '/cache';
 const UPLOAD_DIR = __DIR__ . '/uploads';
@@ -191,7 +191,14 @@ function ensure_schema(PDO $pdo): void
             email TEXT NOT NULL DEFAULT '',
             avatar_url TEXT NOT NULL DEFAULT '',
             website_url TEXT NOT NULL DEFAULT '',
-            social_links TEXT NOT NULL DEFAULT '',
+            qq_url TEXT NOT NULL DEFAULT '',
+            wechat_url TEXT NOT NULL DEFAULT '',
+            weibo_url TEXT NOT NULL DEFAULT '',
+            x_url TEXT NOT NULL DEFAULT '',
+            telegram_url TEXT NOT NULL DEFAULT '',
+            bilibili_url TEXT NOT NULL DEFAULT '',
+            instagram_url TEXT NOT NULL DEFAULT '',
+            tiktok_url TEXT NOT NULL DEFAULT '',
             signature TEXT NOT NULL DEFAULT '',
             created_at INTEGER NOT NULL
         )"
@@ -293,9 +300,10 @@ function ensure_schema(PDO $pdo): void
     $columns = table_columns($pdo, 'posts');
     $userColumns = table_columns($pdo, 'users');
 
-    foreach (['nickname', 'email', 'avatar_url', 'website_url', 'social_links', 'signature'] as $column) {
+    foreach (['nickname', 'email', 'avatar_url', 'website_url', 'qq_url', 'wechat_url', 'weibo_url', 'x_url', 'telegram_url', 'bilibili_url', 'instagram_url', 'tiktok_url', 'signature'] as $column) {
         if (!isset($userColumns[$column])) { $pdo->exec("ALTER TABLE users ADD COLUMN {$column} TEXT NOT NULL DEFAULT ''"); }
     }
+    if (isset($userColumns['social_links'])) { $pdo->exec('ALTER TABLE users DROP COLUMN social_links'); }
 
     $linkColumns = table_columns($pdo, 'links');
     if (!isset($linkColumns['icon_url'])) { $pdo->exec("ALTER TABLE links ADD COLUMN icon_url TEXT NOT NULL DEFAULT ''"); }
@@ -1883,6 +1891,20 @@ function safe_link_url(string $url): string
     }
 
     return '#';
+}
+
+function social_profile_definitions(): array
+{
+    return [
+        'qq' => ['column' => 'qq_url', 'label' => 'QQ', 'icon' => 'ri-qq-fill', 'placeholder' => 'https://qm.qq.com/q/...'],
+        'wechat' => ['column' => 'wechat_url', 'label' => '微信', 'icon' => 'ri-wechat-fill', 'placeholder' => 'https://example.com/wechat'],
+        'weibo' => ['column' => 'weibo_url', 'label' => '微博', 'icon' => 'ri-weibo-fill', 'placeholder' => 'https://weibo.com/...'],
+        'x' => ['column' => 'x_url', 'label' => 'X', 'icon' => 'ri-twitter-x-fill', 'placeholder' => 'https://x.com/...'],
+        'telegram' => ['column' => 'telegram_url', 'label' => 'Telegram', 'icon' => 'ri-telegram-fill', 'placeholder' => 'https://t.me/...'],
+        'bilibili' => ['column' => 'bilibili_url', 'label' => '哔哩哔哩', 'icon' => 'ri-bilibili-fill', 'placeholder' => 'https://space.bilibili.com/...'],
+        'instagram' => ['column' => 'instagram_url', 'label' => 'Instagram', 'icon' => 'ri-instagram-fill', 'placeholder' => 'https://instagram.com/...'],
+        'tiktok' => ['column' => 'tiktok_url', 'label' => 'TikTok', 'icon' => 'ri-tiktok-fill', 'placeholder' => 'https://tiktok.com/@...'],
+    ];
 }
 
 function tag_slug_for_label(string $label): string
@@ -5027,12 +5049,41 @@ function render_admin_users_page(array $form = [], array $errors = []): void
     $id = (int)($_GET['id'] ?? $form['id'] ?? 0);
     $editing = $id > 0 ? one('SELECT * FROM users WHERE id = ?', [$id]) : null;
     $username = (string)($form['username'] ?? $editing['username'] ?? '');
-    $profile = array_merge(['nickname' => '', 'email' => '', 'avatar_url' => '', 'website_url' => '', 'social_links' => '', 'signature' => ''], $editing ?: [], $form);
+    $profileDefaults = ['nickname' => '', 'email' => '', 'avatar_url' => '', 'website_url' => '', 'signature' => ''];
+    foreach (social_profile_definitions() as $definition) { $profileDefaults[$definition['column']] = ''; }
+    $profile = array_merge($profileDefaults, $editing ?: [], $form);
     $sidebar = render_admin_sidebar('users');
     ob_start(); ?>
     <div class="admin-shell"><?= $sidebar ?><div class="admin-main"><?= render_admin_topbar('用户管理') ?><div class="admin-grid admin-grid--split">
       <section class="panel admin-list-panel"><div class="panel__header"><h2>管理员账号</h2><p class="panel__meta">系统至少保留一个管理员。</p></div><div class="panel__body panel__body--flush"><div class="table-wrap"><table class="admin-table"><thead><tr><th>用户</th><th>邮箱</th><th>创建时间</th><th>操作</th></tr></thead><tbody><?php foreach ($users as $user): ?><tr><td><div class="table-title"><strong><?= h((string)($user['nickname'] ?: $user['username'])) ?></strong><span>@<?= h((string)$user['username']) ?><?= (int)$user['id'] === (int)(current_admin()['id'] ?? 0) ? '（当前）' : '' ?></span></div></td><td><?= h((string)$user['email']) ?></td><td><?= h(pretty_date((int)$user['created_at'], true)) ?></td><td><div class="table-actions"><a class="button button--ghost" href="<?= h(url_with_query(url_for('admin_users'), ['id' => (int)$user['id']])) ?>">编辑</a><?php if ((int)$user['id'] !== (int)(current_admin()['id'] ?? 0)): ?><form method="post" action="<?= h(url_for('delete_user')) ?>" onsubmit="return confirm('确定删除这个管理员吗？');"><?= csrf_field() ?><input type="hidden" name="id" value="<?= h($user['id']) ?>"><button class="button button--danger">删除</button></form><?php endif; ?></div></td></tr><?php endforeach; ?></tbody></table></div></div></section>
-      <section class="panel admin-list-panel"><div class="panel__header"><h2><?= $editing ? '编辑用户' : '添加用户' ?></h2></div><div class="panel__body"><?php if ($errors): ?><div class="flash flash--error"><?= h(implode(' ', $errors)) ?></div><?php endif; ?><form class="form-stack" method="post" action="<?= h(url_for('save_user')) ?>"><?= csrf_field() ?><input type="hidden" name="id" value="<?= h((string)$id) ?>"><div class="field-grid"><div class="field"><label>用户名</label><input name="username" value="<?= h($username) ?>" required></div><div class="field"><label>昵称</label><input name="nickname" value="<?= h((string)$profile['nickname']) ?>" required></div></div><div class="field"><label>密码<?= $editing ? '（留空则不修改）' : '' ?></label><input name="password" type="password"<?= $editing ? '' : ' required' ?> minlength="8"></div><div class="field"><label>个人签名档</label><textarea name="signature" rows="3" placeholder="一句话介绍自己"><?= h((string)$profile['signature']) ?></textarea></div><div class="field"><label>邮箱地址</label><input name="email" type="email" value="<?= h((string)$profile['email']) ?>"></div><div class="field"><label>头像地址</label><input name="avatar_url" type="url" value="<?= h((string)$profile['avatar_url']) ?>" placeholder="https://example.com/avatar.jpg"></div><div class="field"><label>网站地址</label><input name="website_url" type="url" value="<?= h((string)$profile['website_url']) ?>" placeholder="https://example.com"></div><div class="field"><label>社交媒体</label><textarea name="social_links" rows="4" placeholder="每行填写一个完整链接"><?= h((string)$profile['social_links']) ?></textarea></div><div class="action-row"><?php if ($editing): ?><a class="button button--secondary" href="<?= h(url_for('admin_users')) ?>">取消编辑</a><?php endif; ?><button class="button"><?= $editing ? '保存修改' : '添加用户' ?></button></div></form></div></section>
+      <section class="panel admin-list-panel">
+        <div class="panel__header"><h2><?= $editing ? '编辑用户' : '添加用户' ?></h2></div>
+        <div class="panel__body">
+          <?php if ($errors): ?><div class="flash flash--error"><?= h(implode(' ', $errors)) ?></div><?php endif; ?>
+          <form class="form-stack" method="post" action="<?= h(url_for('save_user')) ?>">
+            <?= csrf_field() ?>
+            <input type="hidden" name="id" value="<?= h((string)$id) ?>">
+            <div class="field-grid">
+              <div class="field"><label for="user-username">用户名</label><input id="user-username" name="username" value="<?= h($username) ?>" required></div>
+              <div class="field"><label for="user-nickname">昵称</label><input id="user-nickname" name="nickname" value="<?= h((string)$profile['nickname']) ?>" required></div>
+            </div>
+            <div class="field"><label for="user-password">密码<?= $editing ? '（留空则不修改）' : '' ?></label><input id="user-password" name="password" type="password"<?= $editing ? '' : ' required' ?> minlength="8"></div>
+            <div class="field"><label for="user-signature">个人签名档</label><textarea id="user-signature" name="signature" rows="3" placeholder="一句话介绍自己"><?= h((string)$profile['signature']) ?></textarea></div>
+            <div class="field"><label for="user-email">邮箱地址</label><input id="user-email" name="email" type="email" value="<?= h((string)$profile['email']) ?>"></div>
+            <div class="field"><label for="user-avatar">头像地址</label><input id="user-avatar" name="avatar_url" type="url" value="<?= h((string)$profile['avatar_url']) ?>" placeholder="https://example.com/avatar.jpg"></div>
+            <div class="field"><label for="user-website">网站地址</label><input id="user-website" name="website_url" type="url" value="<?= h((string)$profile['website_url']) ?>" placeholder="https://example.com"></div>
+            <div class="field-grid">
+              <?php foreach (social_profile_definitions() as $key => $definition): ?>
+                <div class="field">
+                  <label for="social-<?= h($key) ?>"><?= h((string)$definition['label']) ?></label>
+                  <input id="social-<?= h($key) ?>" name="social_<?= h($key) ?>" type="url" maxlength="300" value="<?= h((string)$profile[$definition['column']]) ?>" placeholder="<?= h((string)$definition['placeholder']) ?>">
+                </div>
+              <?php endforeach; ?>
+            </div>
+            <div class="action-row"><?php if ($editing): ?><a class="button button--secondary" href="<?= h(url_for('admin_users')) ?>">取消编辑</a><?php endif; ?><button class="button"><?= $editing ? '保存修改' : '添加用户' ?></button></div>
+          </form>
+        </div>
+      </section>
     </div></div></div><?php
     render_layout('用户管理', (string)ob_get_clean(), ['active' => 'users', 'wide' => true, 'description' => '用户管理']);
 }
@@ -6164,25 +6215,36 @@ switch ($action) {
         $email = trim((string)($_POST['email'] ?? ''));
         $avatarUrl = trim((string)($_POST['avatar_url'] ?? ''));
         $websiteUrl = trim((string)($_POST['website_url'] ?? ''));
-        $socialLinks = trim((string)($_POST['social_links'] ?? ''));
+        $socialProfiles = [];
+        foreach (social_profile_definitions() as $key => $definition) { $socialProfiles[$definition['column']] = trim((string)($_POST['social_' . $key] ?? '')); }
         $signature = trim((string)($_POST['signature'] ?? ''));
         $errors = [];
         if ($username === '') { $errors[] = '用户名不能为空。'; }
         if ($nickname === '') { $errors[] = '昵称不能为空。'; }
         if ($email !== '' && !filter_var($email, FILTER_VALIDATE_EMAIL)) { $errors[] = '邮箱地址格式不正确。'; }
         foreach (['头像地址' => $avatarUrl, '网站地址' => $websiteUrl] as $label => $url) { if ($url !== '' && !filter_var($url, FILTER_VALIDATE_URL)) { $errors[] = $label . '格式不正确。'; } }
-        foreach (preg_split('/\R+/', $socialLinks) ?: [] as $url) { if (trim($url) !== '' && !filter_var(trim($url), FILTER_VALIDATE_URL)) { $errors[] = '社交媒体链接必须是完整网址。'; break; } }
+        foreach (social_profile_definitions() as $definition) {
+            $url = $socialProfiles[$definition['column']];
+            if ($url !== '' && (strlen($url) > 300 || !preg_match('#^https?://#i', $url) || !filter_var($url, FILTER_VALIDATE_URL))) {
+                $errors[] = $definition['label'] . '链接格式不正确。';
+            }
+        }
         if (one('SELECT id FROM users WHERE username = ? AND id != ?', [$username, $id])) { $errors[] = '用户名已存在。'; }
         if ($id < 1 && strlen($password) < 8) { $errors[] = '密码至少需要 8 个字符。'; }
         if ($id > 0 && $password !== '' && strlen($password) < 8) { $errors[] = '新密码至少需要 8 个字符。'; }
-        $profileForm = ['id' => (string)$id, 'username' => $username, 'nickname' => $nickname, 'email' => $email, 'avatar_url' => $avatarUrl, 'website_url' => $websiteUrl, 'social_links' => $socialLinks, 'signature' => $signature];
+        $profileForm = array_merge(['id' => (string)$id, 'username' => $username, 'nickname' => $nickname, 'email' => $email, 'avatar_url' => $avatarUrl, 'website_url' => $websiteUrl, 'signature' => $signature], $socialProfiles);
         if ($errors) { render_admin_users_page($profileForm, $errors); }
+        $userValues = array_merge(['username' => $username, 'nickname' => $nickname, 'email' => $email, 'avatar_url' => $avatarUrl, 'website_url' => $websiteUrl], $socialProfiles, ['signature' => $signature]);
         if ($id > 0 && one('SELECT id FROM users WHERE id = ?', [$id])) {
-            if ($password !== '') { q('UPDATE users SET username = ?, password_hash = ?, nickname = ?, email = ?, avatar_url = ?, website_url = ?, social_links = ?, signature = ? WHERE id = ?', [$username, password_hash($password, PASSWORD_DEFAULT), $nickname, $email, $avatarUrl, $websiteUrl, $socialLinks, $signature, $id]); }
-            else { q('UPDATE users SET username = ?, nickname = ?, email = ?, avatar_url = ?, website_url = ?, social_links = ?, signature = ? WHERE id = ?', [$username, $nickname, $email, $avatarUrl, $websiteUrl, $socialLinks, $signature, $id]); }
+            if ($password !== '') { $userValues['password_hash'] = password_hash($password, PASSWORD_DEFAULT); }
+            $assignments = implode(', ', array_map(static fn(string $column): string => $column . ' = ?', array_keys($userValues)));
+            q('UPDATE users SET ' . $assignments . ' WHERE id = ?', [...array_values($userValues), $id]);
             set_flash('success', '用户已更新。');
         } else {
-            q('INSERT INTO users(username, password_hash, nickname, email, avatar_url, website_url, social_links, signature, created_at) VALUES(?,?,?,?,?,?,?,?,?)', [$username, password_hash($password, PASSWORD_DEFAULT), $nickname, $email, $avatarUrl, $websiteUrl, $socialLinks, $signature, time()]);
+            $userValues['password_hash'] = password_hash($password, PASSWORD_DEFAULT);
+            $userValues['created_at'] = time();
+            $columns = array_keys($userValues);
+            q('INSERT INTO users(' . implode(', ', $columns) . ') VALUES(' . implode(', ', array_fill(0, count($columns), '?')) . ')', array_values($userValues));
             set_flash('success', '用户已添加。');
         }
         redirect_to(url_for('admin_users'));
