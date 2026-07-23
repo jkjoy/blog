@@ -675,6 +675,36 @@ function bundled_theme_files_missing(): bool
     return false;
 }
 
+function curl_trust_options(): array
+{
+    static $options = null;
+    if (is_array($options)) {
+        return $options;
+    }
+
+    $programFiles = rtrim((string)(getenv('ProgramFiles') ?: 'C:/Program Files'), '/\\');
+    $programFilesX86 = rtrim((string)(getenv('ProgramFiles(x86)') ?: ''), '/\\');
+    $candidates = [
+        (string)ini_get('curl.cainfo'),
+        (string)ini_get('openssl.cafile'),
+        (string)(getenv('CURL_CA_BUNDLE') ?: ''),
+        (string)(getenv('SSL_CERT_FILE') ?: ''),
+        $programFiles . '/Git/mingw64/etc/ssl/certs/ca-bundle.crt',
+        $programFiles . '/Git/usr/ssl/certs/ca-bundle.crt',
+        $programFilesX86 !== '' ? $programFilesX86 . '/Git/mingw64/etc/ssl/certs/ca-bundle.crt' : '',
+        '/etc/ssl/certs/ca-certificates.crt',
+        '/etc/pki/tls/certs/ca-bundle.crt',
+    ];
+    foreach (array_unique($candidates) as $candidate) {
+        $candidate = trim($candidate);
+        if ($candidate !== '' && is_file($candidate) && is_readable($candidate)) {
+            return $options = [CURLOPT_CAINFO => $candidate];
+        }
+    }
+
+    return $options = [];
+}
+
 function github_update_info(bool $refresh = false): array
 {
     ensure_runtime_dirs();
@@ -695,7 +725,14 @@ function github_update_info(bool $refresh = false): array
         return $result;
     }
     $curl = curl_init('https://api.github.com/repos/' . UPDATE_REPOSITORY . '/releases/latest');
-    curl_setopt_array($curl, [CURLOPT_RETURNTRANSFER => true, CURLOPT_FOLLOWLOCATION => true, CURLOPT_CONNECTTIMEOUT => 3, CURLOPT_TIMEOUT => 8, CURLOPT_USERAGENT => 'Simple-PHP-Blog/' . APP_VERSION, CURLOPT_HTTPHEADER => ['Accept: application/vnd.github+json']]);
+    curl_setopt_array($curl, array_replace([
+        CURLOPT_RETURNTRANSFER => true,
+        CURLOPT_FOLLOWLOCATION => true,
+        CURLOPT_CONNECTTIMEOUT => 3,
+        CURLOPT_TIMEOUT => 8,
+        CURLOPT_USERAGENT => 'Simple-PHP-Blog/' . APP_VERSION,
+        CURLOPT_HTTPHEADER => ['Accept: application/vnd.github+json'],
+    ], curl_trust_options()));
     $body = curl_exec($curl);
     $status = (int)curl_getinfo($curl, CURLINFO_RESPONSE_CODE);
     $curlError = curl_error($curl);
@@ -789,7 +826,13 @@ function install_github_update(array $update): string
         $handle = fopen($zipFile, 'wb');
         if ($handle === false) { throw new RuntimeException('无法创建更新包。'); }
         $curl = curl_init((string)$update['download_url']);
-        curl_setopt_array($curl, [CURLOPT_FILE => $handle, CURLOPT_FOLLOWLOCATION => true, CURLOPT_CONNECTTIMEOUT => 5, CURLOPT_TIMEOUT => 60, CURLOPT_USERAGENT => 'Simple-PHP-Blog/' . APP_VERSION]);
+        curl_setopt_array($curl, array_replace([
+            CURLOPT_FILE => $handle,
+            CURLOPT_FOLLOWLOCATION => true,
+            CURLOPT_CONNECTTIMEOUT => 5,
+            CURLOPT_TIMEOUT => 60,
+            CURLOPT_USERAGENT => 'Simple-PHP-Blog/' . APP_VERSION,
+        ], curl_trust_options()));
         $ok = curl_exec($curl);
         $status = (int)curl_getinfo($curl, CURLINFO_RESPONSE_CODE);
         $error = curl_error($curl);
@@ -1672,6 +1715,7 @@ function url_for(string $route, array $params = []): string
         'moderate_comments' => script_url() . '?a=moderate_comments',
         'mark_comments_read' => script_url() . '?a=mark_comments_read',
         'install_update' => script_url() . '?a=install_update',
+        'check_update' => script_url() . '?a=check_update',
         default => script_url(),
     };
 }
@@ -3391,6 +3435,7 @@ function admin_icon(string $name): string
         'mail' => '<path d="M4 4h16a2 2 0 0 1 2 2v12a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V6a2 2 0 0 1 2-2z"></path><path d="m22 6-10 7L2 6"></path>',
         'storage' => '<ellipse cx="12" cy="5" rx="9" ry="3"></ellipse><path d="M3 5v6c0 1.7 4 3 9 3s9-1.3 9-3V5"></path><path d="M3 11v6c0 1.7 4 3 9 3s9-1.3 9-3v-6"></path>',
         'settings' => '<path d="M12 15.5A3.5 3.5 0 1 0 12 8a3.5 3.5 0 0 0 0 7.5z"></path><path d="M19.4 15a1.7 1.7 0 0 0 .3 1.9l.1.1a2 2 0 1 1-2.8 2.8l-.1-.1a1.7 1.7 0 0 0-1.9-.3 1.7 1.7 0 0 0-1 1.5V21a2 2 0 1 1-4 0v-.1a1.7 1.7 0 0 0-1-1.5 1.7 1.7 0 0 0-1.9.3l-.1.1A2 2 0 1 1 4.2 17l.1-.1a1.7 1.7 0 0 0 .3-1.9 1.7 1.7 0 0 0-1.5-1H3a2 2 0 1 1 0-4h.1a1.7 1.7 0 0 0 1.5-1 1.7 1.7 0 0 0-.3-1.9L4.2 7A2 2 0 1 1 7 4.2l.1.1a1.7 1.7 0 0 0 1.9.3h.1a1.7 1.7 0 0 0 1-1.5V3a2 2 0 1 1 4 0v.1a1.7 1.7 0 0 0 1 1.5h.1a1.7 1.7 0 0 0 1.9-.3l.1-.1A2 2 0 1 1 19.8 7l-.1.1a1.7 1.7 0 0 0-.3 1.9v.1a1.7 1.7 0 0 0 1.5 1h.1a2 2 0 1 1 0 4h-.1a1.7 1.7 0 0 0-1.5 1z"></path>',
+        'refresh' => '<path d="M20 11a8.1 8.1 0 0 0-15.5-2M4 4v5h5"></path><path d="M4 13a8.1 8.1 0 0 0 15.5 2M20 20v-5h-5"></path>',
         'logout' => '<path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4"></path><path d="M16 17l5-5-5-5"></path><path d="M21 12H9"></path>',
         default => '<circle cx="12" cy="12" r="8"></circle>',
     };
@@ -3578,6 +3623,13 @@ function render_admin_topbar(string $title, string $actionLabel = '', string $ac
     <div class="admin-topbar">
       <div class="admin-crumb">控制台 / <b><?= h($title) ?></b></div>
       <div class="admin-topbar__actions">
+        <form class="admin-update-check" method="post" action="<?= h(url_for('check_update')) ?>">
+          <?= csrf_field() ?>
+          <button class="button button--secondary button--compact" type="submit">
+            <?= admin_icon('refresh') ?>
+            <span>检测更新</span>
+          </button>
+        </form>
         <a class="admin-icon-btn admin-icon-btn--notifications" href="<?= h($notificationUrl) ?>" title="评论通知" aria-label="<?= $unreadComments > 0 ? h((string)$unreadComments) . ' 条未读评论' : '暂无未读评论' ?>">
           <?= admin_icon('bell') ?>
           <?php if ($unreadComments > 0): ?><small class="admin-count-badge"><?= h((string)min(99, $unreadComments)) ?><?= $unreadComments > 99 ? '+' : '' ?></small><?php endif; ?>
@@ -5877,6 +5929,22 @@ switch ($action) {
             set_flash('success', $isRepair ? '发布主题已同步。' : '已更新到 ' . $version . '。如版本包含数据库变更，请继续访问 update.php。');
         } catch (Throwable $exception) {
             set_flash('error', '更新失败：' . $exception->getMessage());
+        }
+        redirect_to(url_for('admin'));
+        break;
+
+    case 'check_update':
+        require_admin_post(url_for('admin'));
+        $update = github_update_info(true);
+        $updateError = trim((string)($update['error'] ?? ''));
+        if ($updateError !== '') {
+            set_flash('error', '检测更新失败：' . $updateError);
+        } elseif (!empty($update['available'])) {
+            set_flash('success', '发现新版本 ' . (string)$update['latest'] . '，可点击“立即更新”完成升级。');
+        } elseif (!empty($update['repair'])) {
+            set_flash('success', '当前版本已是最新，但发布主题需要补全。');
+        } else {
+            set_flash('success', '暂无更新，当前已是最新版本 ' . APP_VERSION . '。');
         }
         redirect_to(url_for('admin'));
         break;

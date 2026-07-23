@@ -1675,6 +1675,20 @@ textarea:focus {
   gap: 8px;
 }
 
+.theme-admin:not(.theme-admin--guest) .admin-update-check {
+  margin: 0;
+}
+
+.theme-admin:not(.theme-admin--guest) .admin-update-check .button {
+  gap: 6px;
+  white-space: nowrap;
+}
+
+.theme-admin:not(.theme-admin--guest) .admin-update-check .admin-side__icon {
+  width: 16px;
+  height: 16px;
+}
+
 .theme-admin:not(.theme-admin--guest) .admin-icon-btn {
   display: inline-flex;
   align-items: center;
