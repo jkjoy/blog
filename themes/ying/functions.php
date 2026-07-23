@@ -67,7 +67,7 @@ function ying_render_archives_content(): string
     ?>
     <div class="archives-content">
       <article>
-        <h1 class="post-title">归档：</h1>
+        <h1 class="post-title">归档</h1>
         <p class="my-5">共有 <?= h((string)count_published_posts()) ?> 篇文章</p>
         <?php foreach ($years as $year => $months): ?>
           <h2 class="post-card"><?= h((string)$year) ?></h2>
