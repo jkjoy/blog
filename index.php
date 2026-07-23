@@ -13,7 +13,7 @@ session_set_cookie_params([
 ]);
 session_start();
 
-const APP_VERSION = 'v1.3.4';
+const APP_VERSION = 'v1.3.5';
 const DATA_DIR = __DIR__ . '/data';
 const CACHE_DIR = __DIR__ . '/cache';
 const UPLOAD_DIR = __DIR__ . '/uploads';
@@ -196,6 +196,7 @@ function ensure_schema(PDO $pdo): void
             weibo_url TEXT NOT NULL DEFAULT '',
             x_url TEXT NOT NULL DEFAULT '',
             telegram_url TEXT NOT NULL DEFAULT '',
+            mastodon_url TEXT NOT NULL DEFAULT '',
             bilibili_url TEXT NOT NULL DEFAULT '',
             instagram_url TEXT NOT NULL DEFAULT '',
             tiktok_url TEXT NOT NULL DEFAULT '',
@@ -227,6 +228,7 @@ function ensure_schema(PDO $pdo): void
             tags TEXT NOT NULL DEFAULT '[]',
             views INTEGER NOT NULL DEFAULT 0,
             is_pinned INTEGER NOT NULL DEFAULT 0,
+            allow_comments INTEGER NOT NULL DEFAULT 0,
             status TEXT NOT NULL DEFAULT 'draft',
             published_at INTEGER NOT NULL DEFAULT 0,
             created_at INTEGER NOT NULL,
@@ -300,7 +302,7 @@ function ensure_schema(PDO $pdo): void
     $columns = table_columns($pdo, 'posts');
     $userColumns = table_columns($pdo, 'users');
 
-    foreach (['nickname', 'email', 'avatar_url', 'website_url', 'qq_url', 'wechat_url', 'weibo_url', 'x_url', 'telegram_url', 'bilibili_url', 'instagram_url', 'tiktok_url', 'signature'] as $column) {
+    foreach (['nickname', 'email', 'avatar_url', 'website_url', 'qq_url', 'wechat_url', 'weibo_url', 'x_url', 'telegram_url', 'mastodon_url', 'bilibili_url', 'instagram_url', 'tiktok_url', 'signature'] as $column) {
         if (!isset($userColumns[$column])) { $pdo->exec("ALTER TABLE users ADD COLUMN {$column} TEXT NOT NULL DEFAULT ''"); }
     }
     if (isset($userColumns['social_links'])) { $pdo->exec('ALTER TABLE users DROP COLUMN social_links'); }
@@ -333,10 +335,15 @@ function ensure_schema(PDO $pdo): void
         $pdo->exec("ALTER TABLE posts ADD COLUMN is_pinned INTEGER NOT NULL DEFAULT 0");
     }
 
+    if (!isset($columns['allow_comments'])) {
+        $pdo->exec("ALTER TABLE posts ADD COLUMN allow_comments INTEGER NOT NULL DEFAULT 0");
+    }
+
     $pdo->exec("UPDATE posts SET kind = 'post' WHERE kind IS NULL OR trim(kind) = ''");
     $pdo->exec("UPDATE posts SET tags = '[]' WHERE tags IS NULL OR trim(tags) = ''");
     $pdo->exec("UPDATE posts SET views = 0 WHERE views IS NULL");
     $pdo->exec("UPDATE posts SET is_pinned = 0 WHERE is_pinned IS NULL");
+    $pdo->exec("UPDATE posts SET allow_comments = 0 WHERE allow_comments IS NULL");
     $defaultAuthorId = (int)($pdo->query('SELECT id FROM users ORDER BY id ASC LIMIT 1')->fetchColumn() ?: 0);
     if ($defaultAuthorId > 0) {
         $pdo->prepare('UPDATE posts SET author_id = ? WHERE author_id IS NULL OR author_id NOT IN (SELECT id FROM users)')->execute([$defaultAuthorId]);
@@ -1893,6 +1900,13 @@ function safe_link_url(string $url): string
     return '#';
 }
 
+function gravatar_url(string $email, int $size = 72): string
+{
+    $hash = md5(strtolower(trim($email)));
+    $size = max(16, min(512, $size));
+    return 'https://www.gravatar.com/avatar/' . $hash . '?s=' . $size . '&d=identicon&r=g';
+}
+
 function social_profile_definitions(): array
 {
     return [
@@ -1901,6 +1915,7 @@ function social_profile_definitions(): array
         'weibo' => ['column' => 'weibo_url', 'label' => '微博', 'icon' => 'ri-weibo-fill', 'placeholder' => 'https://weibo.com/...'],
         'x' => ['column' => 'x_url', 'label' => 'X', 'icon' => 'ri-twitter-x-fill', 'placeholder' => 'https://x.com/...'],
         'telegram' => ['column' => 'telegram_url', 'label' => 'Telegram', 'icon' => 'ri-telegram-fill', 'placeholder' => 'https://t.me/...'],
+        'mastodon' => ['column' => 'mastodon_url', 'label' => 'Mastodon', 'icon' => 'ri-mastodon-fill', 'placeholder' => 'https://mastodon.social/@...'],
         'bilibili' => ['column' => 'bilibili_url', 'label' => '哔哩哔哩', 'icon' => 'ri-bilibili-fill', 'placeholder' => 'https://space.bilibili.com/...'],
         'instagram' => ['column' => 'instagram_url', 'label' => 'Instagram', 'icon' => 'ri-instagram-fill', 'placeholder' => 'https://instagram.com/...'],
         'tiktok' => ['column' => 'tiktok_url', 'label' => 'TikTok', 'icon' => 'ri-tiktok-fill', 'placeholder' => 'https://tiktok.com/@...'],
@@ -2215,6 +2230,11 @@ function is_live_post(array $post): bool
     return content_kind($post) === 'post' && is_live_content($post);
 }
 
+function content_allows_comments(array $post): bool
+{
+    return content_kind($post) === 'post' || (int)($post['allow_comments'] ?? 0) === 1;
+}
+
 function fetch_published_posts(int $limit, int $offset): array
 {
     $limit = max(1, $limit);
@@ -2451,9 +2471,9 @@ function public_comments_for_post(int $postId, int $limit = 100): array
 {
     $limit = max(1, min(200, $limit));
     return all_rows(
-        "SELECT id, parent_id, reply_to_name, author_name, author_url, content, created_at
+        "SELECT id, parent_id, reply_to_name, author_name, author_email, author_url, content, created_at
          FROM (
-             SELECT id, parent_id, reply_to_name, author_name, author_url, content, created_at
+             SELECT id, parent_id, reply_to_name, author_name, author_email, author_url, content, created_at
              FROM comments
              WHERE post_id = ? AND status = 'approved'
              ORDER BY created_at DESC, id DESC
@@ -3067,6 +3087,7 @@ function validate_post_input(array $input, ?array $existing = null): array
     $status = (string)($input['status'] ?? 'draft');
     $publishedInput = trim((string)($input['published_at'] ?? ''));
     $isPinned = isset($input['is_pinned']) && (string)$input['is_pinned'] === '1' ? 1 : 0;
+    $allowComments = isset($input['allow_comments']) && (string)$input['allow_comments'] === '1' ? 1 : 0;
     $errors = [];
 
     if ($title === '') {
@@ -3114,6 +3135,7 @@ function validate_post_input(array $input, ?array $existing = null): array
         'status' => $status,
         'published_at' => $publishedAt,
         'is_pinned' => $kind === 'post' ? $isPinned : 0,
+        'allow_comments' => $kind === 'page' ? $allowComments : 1,
     ], $errors];
 }
 
@@ -3130,19 +3152,20 @@ function save_post(array $data, ?int $id = null): int
         $data['status'],
         $data['published_at'],
         $data['is_pinned'],
+        $data['allow_comments'],
     ];
     $now = time();
 
     if ($id !== null) {
         q(
-            'UPDATE posts SET kind = ?, category_id = ?, slug = ?, title = ?, tags = ?, excerpt = ?, content = ?, status = ?, published_at = ?, is_pinned = ?, updated_at = ? WHERE id = ?',
+            'UPDATE posts SET kind = ?, category_id = ?, slug = ?, title = ?, tags = ?, excerpt = ?, content = ?, status = ?, published_at = ?, is_pinned = ?, allow_comments = ?, updated_at = ? WHERE id = ?',
             array_merge($values, [$now, $id])
         );
         return $id;
     }
 
     q(
-        'INSERT INTO posts(author_id, kind, category_id, slug, title, tags, excerpt, content, status, published_at, is_pinned, created_at, updated_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)',
+        'INSERT INTO posts(author_id, kind, category_id, slug, title, tags, excerpt, content, status, published_at, is_pinned, allow_comments, created_at, updated_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)',
         array_merge([(int)(current_admin()['id'] ?? 0)], $values, [$now, $now])
     );
     return (int)db()->lastInsertId();
@@ -3161,6 +3184,7 @@ function post_form_from_request(array $input): array
         'status' => (string)($input['status'] ?? 'draft'),
         'published_at' => (string)($input['published_at'] ?? ''),
         'is_pinned' => isset($input['is_pinned']) ? '1' : '0',
+        'allow_comments' => isset($input['allow_comments']) ? '1' : '0',
     ];
 }
 
@@ -3710,7 +3734,7 @@ function render_comments_section(array $post, array $form = [], array $errors = 
     $postId = (int)$post['id'];
     $comments = public_comments_for_post($postId);
     $total = approved_comment_count($postId);
-    $accepting = setting('comments_enabled', '1') === '1' && is_live_post($post);
+    $accepting = setting('comments_enabled', '1') === '1' && content_allows_comments($post) && is_live_content($post);
     $notice = pull_comment_notice($postId);
 
     if (!$accepting && $total === 0 && $notice === null) {
@@ -3771,6 +3795,7 @@ function render_comments_section(array $post, array $form = [], array $errors = 
             <?php $replyAnchorVisible = $replyParentId > 0 && isset($visibleCommentIds[$replyParentId]); ?>
             <li class="comment-item<?= $replyName !== '' ? ' comment-item--reply' : '' ?>" id="comment-<?= h((string)$comment['id']) ?>">
               <header class="comment-item__meta">
+                <img class="comment-item__avatar" src="<?= h(gravatar_url((string)$comment['author_email'])) ?>" width="36" height="36" alt="" loading="lazy" decoding="async" referrerpolicy="no-referrer">
                 <?php if ($authorUrl !== '#'): ?>
                   <a class="comment-item__author" href="<?= h($authorUrl) ?>" target="_blank" rel="ugc nofollow noopener noreferrer">@<?= h((string)$comment['author_name']) ?></a>
                 <?php else: ?>
@@ -3934,25 +3959,22 @@ function render_post_page(array $post, array $commentForm = [], array $commentEr
 function render_page_view(array $page): void
 {
     increment_content_views($page);
-
-    $displayTime = (int)($page['published_at'] ?: $page['updated_at'] ?: $page['created_at']);
+    $allowComments = content_allows_comments($page);
+    [$commentForm, $commentErrors] = $allowComments ? pull_comment_feedback((int)$page['id']) : [[], []];
 
     ob_start();
     ?>
     <article>
       <h1 class="post-title" itemprop="name headline"><?= h($page['title']) ?></h1>
-      <div class="meta">
-        <span>独立页面</span>
-        <span>更新于 <?= h(date('F j, Y', $displayTime)) ?></span>
-        <?php if (!is_live_content($page) && is_admin()): ?>
-          <?php $state = post_state($page); ?>
-          <span><?= h($state['label']) ?>预览</span>
-        <?php endif; ?>
-      </div>
+      <?php if (!is_live_content($page) && is_admin()): ?>
+        <?php $state = post_state($page); ?>
+        <div class="meta"><span><?= h($state['label']) ?>预览</span></div>
+      <?php endif; ?>
       <div class="post-content" itemprop="articleBody">
         <?= markdown_to_html((string)$page['content']) ?>
       </div>
     </article>
+    <?php if ($allowComments): ?><?= render_comments_section($page, $commentForm, $commentErrors) ?><?php endif; ?>
     <?php
     $content = (string)ob_get_clean();
 
@@ -5334,6 +5356,7 @@ function render_editor_page(?array $existing = null, array $form = [], array $er
         'status' => (string)($existing['status'] ?? 'draft'),
         'published_at' => $existing ? datetime_local_value((int)($existing['published_at'] ?: time())) : datetime_local_value(time()),
         'is_pinned' => (string)(int)($existing['is_pinned'] ?? 0),
+        'allow_comments' => (string)(int)($existing['allow_comments'] ?? 0),
     ];
 
     $values = array_merge($defaults, $form);
@@ -5439,6 +5462,11 @@ function render_editor_page(?array $existing = null, array $form = [], array $er
                 <span><strong>置顶文章</strong><small>发布后优先显示在前端文章列表顶部，仅对文章生效。</small></span>
               </label>
 
+              <label class="pin-option page-comments-option" for="allow_comments">
+                <input id="allow_comments" name="allow_comments" type="checkbox" value="1"<?= (string)$values['allow_comments'] === '1' ? ' checked' : '' ?>>
+                <span><strong>显示评论</strong><small>仅对独立页面生效。</small></span>
+              </label>
+
               <div class="field">
                 <div class="field-label-row"><label for="content">正文</label><button class="button button--ghost button--compact" type="button" data-ai-action="polish">AI 润色</button></div>
                 <textarea id="content" class="editor-textarea" name="content" rows="18" required><?= h((string)$values['content']) ?></textarea>
@@ -5537,10 +5565,10 @@ switch ($action) {
         verify_csrf();
         $postId = (int)($_POST['post_id'] ?? 0);
         $post = one(
-            'SELECT * FROM posts WHERE id = ? AND kind = ? AND status = ? AND published_at > 0 AND published_at <= ?',
-            [$postId, 'post', 'published', time()]
+            'SELECT * FROM posts WHERE id = ? AND status = ? AND published_at > 0 AND published_at <= ?',
+            [$postId, 'published', time()]
         );
-        if (!$post) {
+        if (!$post || !content_allows_comments($post)) {
             simple_error_page('文章不存在', '这篇文章当前无法接收评论。', 404);
         }
         $returnUrl = content_permalink($post) . '#comments';

@@ -2932,6 +2932,10 @@ textarea:focus {
   accent-color: var(--admin-danger);
 }
 
+.theme-admin .page-comments-option input {
+  accent-color: var(--admin-accent);
+}
+
 .theme-admin .pin-option span,
 .theme-admin .pin-option small {
   display: block;
@@ -3005,6 +3009,15 @@ textarea:focus {
   align-items: center;
   gap: 4px 12px;
   min-width: 0;
+}
+
+.comment-item__avatar {
+  width: 36px;
+  height: 36px;
+  flex: 0 0 36px;
+  border-radius: 50%;
+  background: var(--panel-soft);
+  object-fit: cover;
 }
 
 .comment-item__author {

@@ -161,7 +161,12 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 $db->exec('ALTER TABLE posts ADD COLUMN is_pinned INTEGER NOT NULL DEFAULT 0');
                 $changes[] = '新增文章置顶字段';
             }
+            if (!update_has_column($db, 'posts', 'allow_comments')) {
+                $db->exec('ALTER TABLE posts ADD COLUMN allow_comments INTEGER NOT NULL DEFAULT 0');
+                $changes[] = '新增独立页评论开关';
+            }
             $db->exec('UPDATE posts SET is_pinned = 0 WHERE is_pinned IS NULL');
+            $db->exec('UPDATE posts SET allow_comments = 0 WHERE allow_comments IS NULL');
             $db->exec('CREATE INDEX IF NOT EXISTS idx_posts_public_pinned ON posts(kind, status, is_pinned DESC, published_at DESC, id DESC)');
             $commentsExist = (bool)$db->query("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'comments' LIMIT 1")->fetchColumn();
             $db->exec(
@@ -290,7 +295,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             }
 
             $socialFieldsChanged = false;
-            foreach (['qq_url', 'wechat_url', 'weibo_url', 'x_url', 'telegram_url', 'bilibili_url', 'instagram_url', 'tiktok_url'] as $column) {
+            foreach (['qq_url', 'wechat_url', 'weibo_url', 'x_url', 'telegram_url', 'mastodon_url', 'bilibili_url', 'instagram_url', 'tiktok_url'] as $column) {
                 if (!update_has_column($db, 'users', $column)) {
                     $db->exec("ALTER TABLE users ADD COLUMN {$column} TEXT NOT NULL DEFAULT ''");
                     $socialFieldsChanged = true;

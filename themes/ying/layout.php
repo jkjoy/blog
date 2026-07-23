@@ -2,7 +2,7 @@
 
 declare(strict_types=1);
 
-$owner = one('SELECT nickname, username, avatar_url, website_url, qq_url, wechat_url, weibo_url, x_url, telegram_url, bilibili_url, instagram_url, tiktok_url, signature FROM users ORDER BY id ASC LIMIT 1') ?? [];
+$owner = one('SELECT nickname, username, avatar_url, website_url, qq_url, wechat_url, weibo_url, x_url, telegram_url, mastodon_url, bilibili_url, instagram_url, tiktok_url, signature FROM users ORDER BY id ASC LIMIT 1') ?? [];
 $ownerName = trim((string)($owner['nickname'] ?? '')) ?: trim((string)($owner['username'] ?? '')) ?: $siteName;
 $signature = trim((string)($owner['signature'] ?? '')) ?: trim(setting('site_tagline'));
 $avatarUrl = theme_logo_url();
@@ -57,18 +57,20 @@ $viewClass = (string)($_GET['a'] ?? '') === 'category' ? 'ying-view-category'
   <main class="ying-shell w-full max-w-full bg-white shadow-lg mx-auto my-0 overflow-hidden p-8 min-h-fit dark:bg-zinc-900 sm:max-w-full sm:my-0 sm:p-8 md:max-w-2xl md:my-12 md:p-8 md:rounded-lg lg:max-w-3xl lg:my-16 lg:p-12 lg:rounded-lg">
     <?php theme_action('header_before', $themeContext); ?>
     <div class="ying-header">
-      <img class="rounded-lg ying-avatar" src="<?= h($avatarUrl) ?>" width="80" height="80" alt="<?= h($ownerName) ?>" decoding="async" fetchpriority="high" onerror="this.onerror=null;this.src='<?= h(theme_logo_url()) ?>'">
-      <div class="ying-profile-row flex justify-between my-4 items-center">
-        <h2 class="!text-sm"><span><?= h($signature) ?></span></h2>
-        <nav aria-label="个人链接">
-          <ul class="ying-social-list flex">
-            <?php foreach ($socialLinks as $social): ?>
-              <li><a href="<?= h((string)$social['url']) ?>" target="_blank" rel="me noopener noreferrer" aria-label="<?= h((string)$social['label']) ?>" title="<?= h((string)$social['label']) ?>"><i class="<?= h((string)$social['icon']) ?>" aria-hidden="true"></i></a></li>
-            <?php endforeach; ?>
-            <li><a href="<?= h($accountUrl) ?>" aria-label="<?= h($accountLabel) ?>" title="<?= h($accountLabel) ?>"><i class="ri-user-line" aria-hidden="true"></i></a></li>
-            <li><a href="<?= h(url_for('rss')) ?>" target="_blank" rel="noopener noreferrer" aria-label="RSS" title="RSS"><i class="ri-rss-fill" aria-hidden="true"></i></a></li>
-          </ul>
-        </nav>
+      <div class="ying-profile-header">
+        <img class="rounded-lg ying-avatar" src="<?= h($avatarUrl) ?>" width="80" height="80" alt="<?= h($ownerName) ?>" decoding="async" fetchpriority="high" onerror="this.onerror=null;this.src='<?= h(theme_logo_url()) ?>'">
+        <div class="ying-profile-row">
+          <nav aria-label="个人链接">
+            <ul class="ying-social-list flex">
+              <?php foreach ($socialLinks as $social): ?>
+                <li><a href="<?= h((string)$social['url']) ?>" target="_blank" rel="me noopener noreferrer" aria-label="<?= h((string)$social['label']) ?>" title="<?= h((string)$social['label']) ?>"><i class="<?= h((string)$social['icon']) ?>" aria-hidden="true"></i></a></li>
+              <?php endforeach; ?>
+              <li><a href="<?= h($accountUrl) ?>" aria-label="<?= h($accountLabel) ?>" title="<?= h($accountLabel) ?>"><i class="ri-user-line" aria-hidden="true"></i></a></li>
+              <li><a href="<?= h(url_for('rss')) ?>" target="_blank" rel="noopener noreferrer" aria-label="RSS" title="RSS"><i class="ri-rss-fill" aria-hidden="true"></i></a></li>
+            </ul>
+          </nav>
+          <h2 class="!text-sm"><span><?= h($signature) ?></span></h2>
+        </div>
       </div>
       <hr class="border-solid border-gray-100 dark:!border-gray-300/50">
 
