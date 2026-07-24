@@ -1023,6 +1023,17 @@ textarea:focus {
   color: var(--admin-text);
 }
 
+.theme-admin .nav-logout-form,
+.theme-admin:not(.theme-admin--guest) .admin-side__logout-form {
+  margin: 0;
+}
+
+.theme-admin .nav-logout-form .nav-link {
+  border: 0;
+  background: transparent;
+  cursor: pointer;
+}
+
 .theme-admin .nav-link--pill,
 .theme-admin .nav-link--pill.is-active {
   background: var(--admin-accent);
@@ -1598,6 +1609,18 @@ textarea:focus {
 
 .theme-admin:not(.theme-admin--guest) .admin-side__account-item--danger {
   color: var(--admin-danger);
+}
+
+.theme-admin:not(.theme-admin--guest) .admin-side__logout-form {
+  width: 100%;
+}
+
+.theme-admin:not(.theme-admin--guest) .admin-side__logout-form .admin-side__account-item {
+  width: 100%;
+  border: 0;
+  background: transparent;
+  cursor: pointer;
+  text-align: left;
 }
 
 .theme-admin:not(.theme-admin--guest) .admin-side__account-item--danger:hover,

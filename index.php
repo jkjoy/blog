@@ -2,18 +2,28 @@
 
 declare(strict_types=1);
 
+const ADMIN_SESSION_IDLE_TIMEOUT = 1800;
+const ADMIN_SESSION_ABSOLUTE_TIMEOUT = 43200;
+
 $sessionSecure = (!empty($_SERVER['HTTPS']) && strtolower((string)$_SERVER['HTTPS']) !== 'off')
     || (string)($_SERVER['SERVER_PORT'] ?? '') === '443';
+$sessionScript = str_replace('\\', '/', (string)($_SERVER['SCRIPT_NAME'] ?? '/index.php'));
+$sessionCookiePath = rtrim(str_replace('\\', '/', dirname($sessionScript)), '/');
+$sessionCookiePath = $sessionCookiePath === '' || $sessionCookiePath === '.' ? '/' : $sessionCookiePath . '/';
+ini_set('session.use_strict_mode', '1');
+ini_set('session.use_only_cookies', '1');
+ini_set('session.use_trans_sid', '0');
+ini_set('session.gc_maxlifetime', (string)ADMIN_SESSION_ABSOLUTE_TIMEOUT);
 session_set_cookie_params([
     'lifetime' => 0,
-    'path' => '/',
+    'path' => $sessionCookiePath,
     'secure' => $sessionSecure,
     'httponly' => true,
     'samesite' => 'Lax',
 ]);
 session_start();
 
-const APP_VERSION = 'v1.3.5';
+const APP_VERSION = 'v1.3.6';
 const DATA_DIR = __DIR__ . '/data';
 const CACHE_DIR = __DIR__ . '/cache';
 const UPLOAD_DIR = __DIR__ . '/uploads';
@@ -1247,7 +1257,59 @@ function current_admin(): ?array
         return $admin = null;
     }
 
-    return $admin = one('SELECT id, username, nickname, email, avatar_url, website_url, created_at FROM users WHERE id = ?', [$id]);
+    $admin = one('SELECT id, username, password_hash, nickname, email, avatar_url, website_url, created_at FROM users WHERE id = ?', [$id]);
+    if ($admin === null) {
+        clear_admin_authentication();
+        return null;
+    }
+
+    $now = time();
+    $authenticatedAt = (int)($_SESSION['admin_authenticated_at'] ?? $now);
+    $lastSeenAt = (int)($_SESSION['admin_last_seen_at'] ?? $now);
+    $currentFingerprint = hash('sha256', (string)$admin['password_hash']);
+    $storedFingerprint = (string)($_SESSION['admin_password_fingerprint'] ?? $currentFingerprint);
+    $expired = $now - $lastSeenAt > ADMIN_SESSION_IDLE_TIMEOUT
+        || $now - $authenticatedAt > ADMIN_SESSION_ABSOLUTE_TIMEOUT;
+    if ($expired || !hash_equals($storedFingerprint, $currentFingerprint)) {
+        clear_admin_authentication();
+        return $admin = null;
+    }
+
+    $_SESSION['admin_authenticated_at'] = $authenticatedAt;
+    $_SESSION['admin_last_seen_at'] = $now;
+    $_SESSION['admin_password_fingerprint'] = $currentFingerprint;
+    unset($admin['password_hash']);
+    return $admin;
+}
+
+function clear_admin_authentication(): void
+{
+    unset(
+        $_SESSION['admin_id'],
+        $_SESSION['admin_authenticated_at'],
+        $_SESSION['admin_last_seen_at'],
+        $_SESSION['admin_password_fingerprint']
+    );
+    if (session_status() === PHP_SESSION_ACTIVE && session_id() !== '') {
+        session_regenerate_id(true);
+    }
+}
+
+function destroy_current_session(): void
+{
+    $_SESSION = [];
+    if ((bool)ini_get('session.use_cookies')) {
+        $params = session_get_cookie_params();
+        setcookie(session_name(), '', [
+            'expires' => time() - 42000,
+            'path' => (string)$params['path'],
+            'domain' => (string)$params['domain'],
+            'secure' => (bool)$params['secure'],
+            'httponly' => (bool)$params['httponly'],
+            'samesite' => (string)($params['samesite'] ?? 'Lax'),
+        ]);
+    }
+    session_destroy();
 }
 
 function authenticated_comment_identity(): ?array
@@ -3387,7 +3449,10 @@ function render_layout(string $title, string $content, array $options = []): voi
             <nav class="site-nav site-nav--admin" aria-label="Primary">
               <a class="nav-link<?= $active === 'admin' ? ' is-active' : '' ?>" href="<?= h(url_for('admin')) ?>">管理后台</a>
               <a class="nav-link nav-link--pill<?= in_array($active, ['write', 'edit'], true) ? ' is-active' : '' ?>" href="<?= h(url_for('write')) ?>">撰写文章</a>
-              <a class="nav-link" href="<?= h(url_for('logout')) ?>">退出</a>
+              <form class="nav-logout-form" method="post" action="<?= h(url_for('logout')) ?>">
+                <?= csrf_field() ?>
+                <button class="nav-link" type="submit">退出</button>
+              </form>
             </nav>
           <?php endif; ?>
         </div>
@@ -3601,10 +3666,13 @@ function render_admin_sidebar(string $active, array $summary = []): string
               <?= admin_icon('users') ?>
               <span>用户设置</span>
             </a>
-            <a class="admin-side__account-item admin-side__account-item--danger" role="menuitem" href="<?= h(url_for('logout')) ?>">
-              <?= admin_icon('logout') ?>
-              <span>退出登录</span>
-            </a>
+            <form class="admin-side__logout-form" method="post" action="<?= h(url_for('logout')) ?>">
+              <?= csrf_field() ?>
+              <button class="admin-side__account-item admin-side__account-item--danger" role="menuitem" type="submit">
+                <?= admin_icon('logout') ?>
+                <span>退出登录</span>
+              </button>
+            </form>
           </div>
         </details>
       </div>
@@ -5885,7 +5953,12 @@ switch ($action) {
 
             login_rate_state(false, true);
             session_regenerate_id(true);
+            $now = time();
+            unset($_SESSION['csrf_token']);
             $_SESSION['admin_id'] = (int)$user['id'];
+            $_SESSION['admin_authenticated_at'] = $now;
+            $_SESSION['admin_last_seen_at'] = $now;
+            $_SESSION['admin_password_fingerprint'] = hash('sha256', (string)$user['password_hash']);
             set_flash('success', '已登录后台。');
             redirect_to(url_for('admin'));
         }
@@ -5894,8 +5967,8 @@ switch ($action) {
         break;
 
     case 'logout':
-        unset($_SESSION['admin_id']);
-        set_flash('success', '已退出后台。');
+        require_admin_post(url_for('home'));
+        destroy_current_session();
         redirect_to(url_for('home'));
         break;
 
